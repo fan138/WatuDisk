@@ -1,0 +1,21 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---- 构建产物（发布时通过 GitHub Releases 附带，不入库） ----
+build/pyinstaller/
+deploy/
+*.exe
+
+# ---- 编辑器 / 工具 ----
+.workbuddy/
+.vscode/
+.idea/
+*.user
+
+# ---- 系统杂项 ----
+Thumbs.db
+Desktop.ini
+
+build/tools/
