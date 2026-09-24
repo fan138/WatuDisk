@@ -14,6 +14,11 @@ deploy/
 .idea/
 *.user
 
+# ---- 本地一次性脚本与日志（不入库） ----
+build/*.log
+build/exe_selftest.*
+test/gh_device_login.py
+
 # ---- 系统杂项 ----
 Thumbs.db
 Desktop.ini

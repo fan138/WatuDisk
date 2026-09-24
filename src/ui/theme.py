@@ -155,6 +155,19 @@ QPushButton#secondary { background: #FFFFFF; color: #2563EB; border: 1px solid #
 QPushButton#secondary:hover { background: #EEF2FF; }
 QPushButton#secondary:disabled { color: #9CA3AF; border-color: #E5E7EB; background: #FFFFFF; }
 
+/* ---- 平坦蓝色文字链接按钮 ---- */
+QPushButton#linkBtn {
+    background: transparent;
+    border: none;
+    color: #2563EB;
+    font-size: 12px;
+    padding: 2px 6px;
+}
+QPushButton#linkBtn:hover {
+    color: #1D4ED8;
+    text-decoration: underline;
+}
+
 /* ---- 进度条 ---- */
 QProgressBar { background: #E5E7EB; border: none; border-radius: 4px; }
 QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

@@ -23,9 +23,10 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTimer,
+    QUrl,
     Signal,
 )
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QColor, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -64,6 +65,9 @@ LEVEL_PILL = {
 
 # Get-PhysicalDisk HealthStatus 的中文显示
 HEALTH_TEXT = {"healthy": "良好", "warning": "警告", "unhealthy": "不健康"}
+
+# 项目主页（点击底部「GitHub」按钮用系统默认浏览器打开）
+GITHUB_URL = "https://github.com/fan138/WatuDisk"
 
 # 高亮的危险 SMART 属性
 _BAD_ATTR_IDS = (0x05, 0xC5, 0xC6, 0xC7)
@@ -1142,6 +1146,14 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self._btn_export)
         btn_row.addWidget(self._autostart_check)
         btn_row.addWidget(self._silent_check)
+        self._github_btn = QPushButton("GitHub")
+        self._github_btn.setObjectName("linkBtn")
+        self._github_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._github_btn.setToolTip("在 GitHub 上查看源码与版本更新")
+        self._github_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(GITHUB_URL))
+        )
+        btn_row.addWidget(self._github_btn)
         btn_row.addStretch()
         note.setToolTip("气泡提醒与提醒方案：请右键任务栏托盘图标 → 「提醒设置」")
         btn_row.addWidget(note, 0, Qt.AlignmentFlag.AlignBottom)
