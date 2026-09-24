@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(TEST_DIR, "..", "src")))
 sys.path.insert(0, TEST_DIR)
 
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -49,23 +49,27 @@ def _run_detect() -> list[dict]:
 
 
 def _grid_texts(card: DiskCard, result: dict) -> dict[str, str]:
-    """从专业指标网格取 {label: value} 映射（按 objectName 配对）。"""
-    # 直接重建网格（与卡片内部同一实现），避免依赖懒加载细节
-    frame = card._build_metrics_grid(result)
-    from PySide6.QtWidgets import QGridLayout
+    """从专业指标网格取 {label: value} 映射。
 
+    网格的每个指标是一个 QWidget 单元格（label + value + 可选忽略按钮），
+    单元格内的 label 以 objectName="metricLabel" 标识，value 以 "metricValue*" 标识。
+    """
+    frame = card._build_metrics_grid(result)
     layout = frame.layout()
-    assert isinstance(layout, QGridLayout)
-    cells: dict[tuple[int, int], str] = {}
-    for i in range(layout.count()):
-        widget = layout.itemAt(i).widget()
-        if isinstance(widget, QLabel):
-            row, col, _, _ = layout.getItemPosition(i)
-            cells[(row, col)] = widget.text()
     mapping: dict[str, str] = {}
-    for (row, col), text in cells.items():
-        if (row, col + 1) in cells:
-            mapping[text] = cells[(row, col + 1)]
+    for i in range(layout.count()):
+        cell = layout.itemAt(i).widget()
+        if not isinstance(cell, QWidget):
+            continue
+        label_text = value_text = None
+        for w in cell.findChildren(QLabel):
+            on = w.objectName()
+            if on == "metricLabel":
+                label_text = w.text()
+            elif on.startswith("metricValue"):
+                value_text = w.text()
+        if label_text is not None:
+            mapping[label_text] = value_text or ""
     return mapping
 
 
@@ -86,6 +90,14 @@ def test_qa_disk_card_nvme_detail_and_metrics():
         card = DiskCard(result, admin=True)
         mapping = _grid_texts(card, result)
         for label in _METRIC_NEW_ITEMS:
+            if label == "使用率（NVMe）":
+                # 与「剩余寿命（SSD）」互为镜像，网格只渲染其一，二者有值即可
+                alt = "剩余寿命（SSD）"
+                assert label in mapping or alt in mapping, \
+                    f"专业指标缺少 v1.2 新项「{label}」或其镜像「{alt}」"
+                val = mapping.get(label) or mapping.get(alt)
+                assert val and val != "—", f"「{label}」/「{alt}」无值（显示 {val}）"
+                continue
             assert label in mapping, f"专业指标缺少 v1.2 新项「{label}」"
             value = mapping[label]
             assert value and value != "—", f"「{label}」无值（显示 {value}）"
@@ -120,7 +132,7 @@ def test_qa_export_report_nvme_table_and_wording():
         assert "需要管理员权限" not in html, "提权环境下报告不应出现「需要管理员权限」"
         # 卷损坏位应显示「未置位」而非「无法读取」
         assert "未置位" in html, "报告应包含卷损坏位未置位说明"
-        assert "v1.2" in html, "报告应带 v1.2 版本号"
+        assert "v1.0.0" in html, "报告应带 v1.0.0 版本号"
     finally:
         if os.path.isfile(path):
             os.remove(path)

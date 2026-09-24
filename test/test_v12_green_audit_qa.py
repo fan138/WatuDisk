@@ -46,15 +46,15 @@ def test_qa_green_version_is_v12():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.APP_VERSION == "v1.2", module.APP_VERSION
-    assert module.APP_NAME == "硬盘健康卫士"
+    assert module.APP_VERSION == "v1.0.0", module.APP_VERSION
+    assert module.APP_NAME == "挖兔硬盘精灵"
 
 
 def test_qa_report_version_is_v12():
     src_report = os.path.join(SRC_DIR, "core", "report.py")
     with open(src_report, encoding="utf-8") as handle:
         source = handle.read()
-    assert 'APP_VERSION = "v1.2"' in source, "report.py 版本号应为 v1.2"
+    assert 'APP_VERSION = "v1.0.0"' in source, "report.py 版本号应为 v1.0.0"
 
 
 if __name__ == "__main__":

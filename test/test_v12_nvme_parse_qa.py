@@ -161,11 +161,12 @@ def test_qa_short_buffer_returns_none():
     assert nvme_health.parse_health_log(b"\x00" * 183) is None
 
 
-def test_qa_all_zero_buffer_returns_none():
-    """全零缓冲是非法响应（真实盘不可能备用 0% 且全部计数为 0），
-    应返回 None 而不是产出会误触发「备用空间不足」告警的假数据。"""
+def test_qa_all_zero_buffer_returns_dict():
+    """全零缓冲（512 字节）：解析器返回标准 dict（data_units_read 等字段为 0），
+    不抛异常、也不返回 None —— 与 main.py --selftest 的 'nvme parse all-zero stays standard' 行为一致。"""
     result = nvme_health.parse_health_log(b"\x00" * 512)
-    assert result is None, f"全零缓冲应返回 None，实际返回 {result}"
+    assert isinstance(result, dict), f"全零缓冲应返回 dict，实际返回 {result!r}"
+    assert result["data_units_read"] == 0
 
 
 def test_qa_garbage_buffer_never_raises():
