@@ -5,6 +5,8 @@ __pycache__/
 
 # ---- 构建产物（发布时通过 GitHub Releases 附带，不入库） ----
 build/pyinstaller/
+src/build/pyinstaller/
+src/dist/
 deploy/
 *.exe
 
@@ -18,6 +20,14 @@ deploy/
 build/*.log
 build/exe_selftest.*
 test/gh_device_login.py
+test/_reg_*.log
+
+# ---- 设计稿与本地备份（正式图标源单独入库，候选稿不入库） ----
+design/*
+!design/icon_rounded/
+design/icon_rounded/*
+!design/icon_rounded/icon_02.png
+backup/
 
 # ---- 系统杂项 ----
 Thumbs.db

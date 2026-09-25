@@ -1385,7 +1385,9 @@ class MainWindow(QMainWindow):
                 self._tray.notify_custom("体检报告", text, QSystemTrayIcon.MessageIcon.Warning)
             else:
                 _, text = tender.pick("ok")
-                self._tray.notify_custom("体检报告", text, QSystemTrayIcon.MessageIcon.Information)
+                # v1.7.1：手动体检健康气泡标题也用时段问候语（此前仅开机体检有问候）
+                greeting = tender.boot_greeting()
+                self._tray.notify_custom(greeting, text, QSystemTrayIcon.MessageIcon.Information)
 
         if self._tray is not None:
             self._tray.stop_activity()
