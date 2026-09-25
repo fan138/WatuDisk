@@ -3,7 +3,7 @@
 > 挖兔品牌系列工具 · 硬盘健康守护
 > 免安装 · 不联网 · 只读检测 · 单文件绿色版
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://www.microsoft.com/windows)
 [![Package](https://img.shields.io/badge/package-单文件绿色版-brightgreen)](https://github.com/fan138/WatuDisk/releases)
 [![Language](https://img.shields.io/badge/language-Python%203.13-orange)](https://www.python.org)
@@ -106,7 +106,7 @@ python -m PyInstaller --clean --noconfirm `
 
 ## 📄 许可证
 
-[MIT](LICENSE) —— 欢迎自由使用、修改与分发。
+[GPL-3.0](LICENSE)（双许可）—— 本软件自由开源：可自由使用、学习、修改与分发，衍生作品同样须以 GPL-3.0 开源并保留原作者署名；如需闭源或排除 GPL 条款的商业授权，请与作者联系。
 
 ## 🙏 鸣谢
 
