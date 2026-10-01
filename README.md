@@ -13,6 +13,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/fan138/WatuDisk)](https://github.com/fan138/WatuDisk/releases)
 [![Downloads](https://img.shields.io/github/downloads/fan138/WatuDisk/total)](https://github.com/fan138/WatuDisk/releases)
 [![Stars](https://img.shields.io/github/stars/fan138/WatuDisk)](https://github.com/fan138/WatuDisk/stargazers)
+[![Gitee stars](https://img.shields.io/gitee/stars/fan188/WatuDisk?logo=gitee&color=c71d23)](https://gitee.com/fan188/WatuDisk)
 
 ![主界面预览](preview.png)
 
@@ -51,7 +52,7 @@
 
 从 [Releases](https://github.com/fan138/WatuDisk/releases) 下载 `WatuDiskSprite.exe`，双击即可运行，无需安装。
 
-- 国内用户若 GitHub 访问缓慢，可关注后续 Gitee 镜像（筹备中）；
+- 国内用户若 GitHub 访问缓慢，可走 **Gitee 镜像**：https://gitee.com/fan188/WatuDisk ；
 - 读取完整 SMART 数据需要管理员权限（程序会自动请求 UAC 提权）；
 - 若未以管理员身份运行，部分检测项会受限，界面会明确提示。
 
