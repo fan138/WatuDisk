@@ -132,7 +132,7 @@ def test_qa_export_report_nvme_table_and_wording():
         assert "需要管理员权限" not in html, "提权环境下报告不应出现「需要管理员权限」"
         # 卷损坏位应显示「未置位」而非「无法读取」
         assert "未置位" in html, "报告应包含卷损坏位未置位说明"
-        assert "v1.0.0" in html, "报告应带 v1.0.0 版本号"
+        assert "v1.1.0" in html, "报告应带 v1.1.0 版本号"
     finally:
         if os.path.isfile(path):
             os.remove(path)

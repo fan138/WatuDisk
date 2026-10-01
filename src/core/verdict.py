@@ -143,7 +143,10 @@ def evaluate_disk(
         nvme_health: NVMe 健康日志直读结果（core.nvme_health），无数据传 None。
 
     Returns:
-        {"score": int, "level": str, "level_text": str, "reasons": list[str]}
+        {"score": int, "level": str, "level_text": str, "reasons": list[str],
+         "monitor_supported": bool}
+        v1.1.0：USB 设备且所有健康通道均无数据时 monitor_supported=False
+        （U 盘普遍不提供 SMART，属硬件限制），界面据此显示「不支持」。
     """
     reasons: list[str] = []
     score = 100.0
@@ -223,7 +226,7 @@ def evaluate_disk(
         for key, label in (("ReadErrorsUncorrected", "读取"), ("WriteErrorsUncorrected", "写入")):
             value = _to_int(counters.get(key))
             if value is not None and value > 0:
-                deduct(min(15, 8 + value // 50), f"累计出现 {value:,} 次无法修正的{label}错误，盘体可能存在物理损伤，建议尽快备份重要数据。")
+                deduct(min(15, 8 + value // 50), f"累计出现 {value:,} 次无法修正的{label}错误，可能与坏道、盘体老化或连接不稳定有关，建议尽快备份重要数据并持续观察。")
 
     # ---- 5.5) NVMe 健康日志（v1.2 直读通道；无数据时整体跳过，不影响既有规则） ----
     nvme = nvme_health or {}
@@ -323,14 +326,26 @@ def evaluate_disk(
         reasons.append("各项关键指标均在正常范围内，当前状态良好，请继续保持定期备份的好习惯。")
 
     # 已有 NVMe 健康数据（或计数器 / SMART 任一通道可用）时不提示数据受限
+    monitor_supported = True
     if nvme_health is None and not had_counters and not had_smart:
-        reasons.insert(0, "部分检测项无法读取（可能未以管理员身份运行或系统不支持），结果可能不完整，仅供参考。")
+        if bus == "USB":
+            # U 盘 / USB 桥接设备：绝大多数 U 盘硬件层不提供 SMART，
+            # 移动硬盘取决于硬盘盒桥接芯片——这是硬件限制，不是权限问题。
+            monitor_supported = False
+            reasons.insert(
+                0,
+                "这是一块 USB 设备（U 盘 / 移动硬盘）。U 盘通常不提供 SMART 健康数据，"
+                "移动硬盘取决于硬盘盒的桥接芯片，因此健康信息暂时无法读取，仅显示基本信息。",
+            )
+        else:
+            reasons.insert(0, "部分检测项无法读取（可能未以管理员身份运行或系统不支持），结果可能不完整，仅供参考。")
 
     return {
         "score": score,
         "level": level,
         "level_text": LEVEL_TEXT[level],
         "reasons": reasons,
+        "monitor_supported": monitor_supported,
     }
 
 
@@ -346,6 +361,9 @@ def summarize(results: list[dict]) -> dict:
     counts = {"total": len(results), "healthy": 0, "warning": 0, "danger": 0}
     for result in results:
         verdict_data = result.get("verdict") or {}
+        # v1.1.0：不支持健康监测的设备（U 盘等无 SMART 通道）不计入健康/警告/危险统计
+        if verdict_data.get("monitor_supported") is False:
+            continue
         level = verdict_data.get("level")
         if level in counts:
             counts[level] += 1

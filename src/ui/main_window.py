@@ -658,6 +658,9 @@ class DiskCard(QFrame):
     @staticmethod
     def _pill_object_name(verdict_data: dict) -> str:
         """六档色药丸样式名；无效数据回退三档 / 灰。"""
+        # v1.1.0：U 盘等无 SMART 通道的设备显示灰色「不支持」
+        if verdict_data.get("monitor_supported") is False:
+            return "pillGray"
         level = str(verdict_data.get("level") or "")
         if not verdict_data.get("score") and level not in LEVEL_PILL:
             return "pillGray"
@@ -667,6 +670,9 @@ class DiskCard(QFrame):
         """药丸文字：六档短标签 + 分数；加载中显示「检测中」；无效数据回退。"""
         if getattr(self, "_loading", False):
             return "检测中"
+        # v1.1.0：U 盘等无 SMART 通道的设备如实显示「不支持」而非满分
+        if verdict_data.get("monitor_supported") is False:
+            return "不支持"
         level = str(verdict_data.get("level") or "")
         score = verdict_data.get("score")
         if not score and level not in LEVEL_PILL:

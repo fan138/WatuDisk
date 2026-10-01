@@ -14,7 +14,7 @@ from core.nvme_health import format_data_units
 from core.verdict import GRADE_COLORS, GRADE_LABELS, grade_of_verdict
 
 APP_NAME = "挖兔硬盘精灵"
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v1.1.0"
 
 _STYLE = """
 body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
@@ -49,6 +49,9 @@ def _esc(text: object) -> str:
 
 def _pill(level: str, level_text: str, score: int, verdict_data: dict | None = None) -> str:
     """六档配色徽章（v1.5）：与主界面/托盘完全同色。"""
+    # v1.1.0：U 盘等无 SMART 通道的设备如实标注，不显示误导性满分
+    if verdict_data and verdict_data.get("monitor_supported") is False:
+        return '<span class="badge" style="background:#9AA0A6;color:#FFFFFF">不支持 · 无 SMART 数据</span>'
     if verdict_data:
         grade = grade_of_verdict(verdict_data)
         if grade != -1:

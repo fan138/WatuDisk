@@ -119,9 +119,10 @@ def test_bytes_object_input():
 
 
 def test_unknown_attr_gets_hex_placeholder_name():
-    vendor = make_vendor([make_attr_block(0xFE, 100, 1)])
+    # v1.1.0 字典扩充后 0xFE（自由跌落保护）已有名字，改用真正未定义的 0x13
+    vendor = make_vendor([make_attr_block(0x13, 100, 1)])
     attrs = smart_parser.parse_vendor_attributes(vendor)
-    assert attrs[0]["name"] == "未知属性 0xFE"
+    assert attrs[0]["name"] == "未知属性 0x13"
 
 
 def test_attr_display_name_known_and_unknown():
