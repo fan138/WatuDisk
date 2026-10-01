@@ -58,9 +58,17 @@
 
 ## 📦 下载与运行
 
-从 [Releases](https://github.com/fan138/WatuDisk/releases) 下载 `WatuDiskSprite.exe`，双击即可运行，无需安装。
+从下方任一渠道下载 `WatuDiskSprite1.1.2.zip`（内含 `WatuDiskSprite.exe` 单文件绿色版），解压后双击 `WatuDiskSprite.exe` 即可运行，无需安装。
 
-- 国内用户若 GitHub 访问缓慢，可走 **Gitee 镜像**：https://gitee.com/fan188/WatuDisk ；
+| 下载源 | 说明 |
+| --- | --- |
+| **[GitHub Releases](https://github.com/fan138/WatuDisk/releases)** | 主站，全球可用 |
+| **[Gitee 附件·国内直下](https://gitee.com/fan188/WatuDisk/releases/download/v1.1.2/WatuDiskSprite1.1.2.zip)** | 国内镜像，直链最快 |
+| **[蓝奏云](https://wwata.lanzouv.com/i2i8j4akun9c)** | 国内备用，免登录 |
+| **[百度网盘](https://pan.baidu.com/s/1tdQv-ES-FKT285VQstu2Lg?pwd=1234)** | 提取码 `1234`，长期备份 |
+
+> 安装包已校验 SHA256 = `1e0f6259…473c1`，并经 VirSCAN 48 引擎扫描全部未检出，可放心使用。
+
 - 读取完整 SMART 数据需要管理员权限（程序会自动请求 UAC 提权）；
 - 若未以管理员身份运行，部分检测项会受限，界面会明确提示。
 
