@@ -16,7 +16,7 @@ import sys
 import time
 
 APP_NAME = "挖兔硬盘精灵"
-APP_VERSION = "v1.1.0"
+APP_VERSION = "v1.1.1"
 
 
 # ----------------------------------------------------------------------
@@ -432,7 +432,8 @@ def _selftest() -> int:
     level_map = {item["key"]: item["level"] for item in sample_items}
     check(
         "metric items for result",
-        len(sample_items) > 15
+        # v1.1.1 去掉「—」后无数据行整行隐藏，合成样本（SATA+NVMe 全通道）约 11 行
+        len(sample_items) >= 11
         and level_map.get("current_temp") == metrics.LEVEL_DANGER
         and level_map.get("life_remaining") == metrics.LEVEL_OK
         and level_map.get("event_count") == metrics.LEVEL_DANGER

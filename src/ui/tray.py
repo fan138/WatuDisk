@@ -337,7 +337,17 @@ class TrayController(QObject):
         act_quit.triggered.connect(self._window.force_quit)
         menu.addAction(act_quit)
 
+        # v1.1.1 保险：菜单每次弹出前按真实状态刷新勾选，
+        # 彻底杜绝任何初始化时序 / 迁移导致的「右键菜单与实际状态不符」。
+        menu.aboutToShow.connect(self._refresh_dynamic_checks)
+
         self._tray.setContextMenu(menu)
+
+    def _refresh_dynamic_checks(self) -> None:
+        """菜单弹出前把「开机启动」勾选对齐到真实自启动状态（屏蔽信号防回环）。"""
+        self._act_autostart.blockSignals(True)
+        self._act_autostart.setChecked(autostart.is_enabled())
+        self._act_autostart.blockSignals(False)
 
     def _test_bubble(self) -> None:
         """调试用：立即弹一张自绘气泡（正式版菜单已移除入口）。"""

@@ -23,6 +23,7 @@ QA_V12_MODULES = [
     "test_v12_real_machine_qa",
     "test_v12_ui_report_qa",
     "test_v110_usb_unsupported",
+    "test_v111_ignore_rescore",
 ]
 
 LEGACY_MODULES = [

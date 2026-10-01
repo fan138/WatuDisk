@@ -130,6 +130,7 @@ def evaluate_disk(
     recent_events: list[dict] | None = None,
     dirty_volumes: list[dict] | None = None,
     nvme_health: dict | None = None,
+    ignored_keys: set[str] | None = None,
 ) -> dict:
     """对单块磁盘做综合评分与判读。
 
@@ -141,6 +142,10 @@ def evaluate_disk(
         recent_events: 最近几条相关事件（用于理由中引用示例）。
         dirty_volumes: 该盘上损坏位已置位的分区列表。
         nvme_health: NVMe 健康日志直读结果（core.nvme_health），无数据传 None。
+        ignored_keys: 用户选择忽略的指标 key 集合（metrics.metric_items_for_result
+            的 key 命名，如 pending_sector / uncorrectable / current_temp）。
+            v1.1.1：被忽略的项不再参与扣分（评分回归剩余项的真实水平），
+            但会在理由中如实注明「已忽略」，UI 上颜色警示仍保留。
 
     Returns:
         {"score": int, "level": str, "level_text": str, "reasons": list[str],
@@ -153,6 +158,8 @@ def evaluate_disk(
     # 强制档位标志：某些信号本身就是硬性结论，不允许仅靠扣分落在错误档位。
     force_danger = False   # 系统已报告 Unhealthy -> 无论得分多少强制「危险」
     force_warning = False  # C5 > 0 -> 无论得分多少至少「警告」
+    ignored = {str(k) for k in (ignored_keys or set())}
+    suppressed: list[str] = []  # 因被忽略而未扣分的指标名（汇总时如实注明）
 
     smart = {}
     for attr in smart_attrs or []:
@@ -184,20 +191,32 @@ def evaluate_disk(
     # ---- 2) SMART 关键属性（SATA 盘） ----
     c6 = _raw_of(smart, _SMART_C6)
     if c6 > 0:
-        deduct(45, f"检测到 {c6} 个无法修正的坏扇区，数据已经有实际损坏风险，请立即备份数据并考虑更换硬盘。")
+        if "uncorrectable" in ignored:
+            suppressed.append("无法修正扇区")
+        else:
+            deduct(45, f"检测到 {c6} 个无法修正的坏扇区，数据已经有实际损坏风险，请立即备份数据并考虑更换硬盘。")
 
     c5 = _raw_of(smart, _SMART_C5)
     if c5 > 0:
-        force_warning = True
-        deduct(min(35, 20 + c5 // 8), f"有 {c5} 个扇区出现异常、正等待系统替换（待映射扇区），这是坏道出现的前兆，建议先备份数据再持续观察。")
+        if "pending_sector" in ignored:
+            suppressed.append("待映射扇区")
+        else:
+            force_warning = True
+            deduct(min(35, 20 + c5 // 8), f"有 {c5} 个扇区出现异常、正等待系统替换（待映射扇区），这是坏道出现的前兆，建议先备份数据再持续观察。")
 
     c05 = _raw_of(smart, _SMART_05)
     if c05 > 0:
-        deduct(min(25, 8 + c05 // 16), f"这块盘已出现 {c05} 个坏块并被备用块替换，说明盘开始老化，建议尽快备份数据。")
+        if "reallocated" in ignored:
+            suppressed.append("重映射扇区")
+        else:
+            deduct(min(25, 8 + c05 // 16), f"这块盘已出现 {c05} 个坏块并被备用块替换，说明盘开始老化，建议尽快备份数据。")
 
     c7 = _raw_of(smart, _SMART_C7)
     if c7 > 0:
-        deduct(min(10, 3 + c7 // 100), f"检测到 {c7} 次接口传输错误（CRC），多数是数据线或接口接触不良，台式机可尝试更换 SATA 线后重新检测。")
+        if "crc_errors" in ignored:
+            suppressed.append("接口错误（CRC）")
+        else:
+            deduct(min(10, 3 + c7 // 100), f"检测到 {c7} 次接口传输错误（CRC），多数是数据线或接口接触不良，台式机可尝试更换 SATA 线后重新检测。")
 
     # ---- 3) SSD 磨损（Wear 为已消耗寿命百分比，剩余 = 100 - Wear） ----
     media = str(disk.get("media_type") or "").upper()
@@ -205,28 +224,39 @@ def evaluate_disk(
     is_ssd = media == "SSD" or bus == "NVME"
     wear_used = _to_int(counters.get("Wear")) if counters else None
     if is_ssd and wear_used is not None and wear_used >= 0:
-        remaining = max(0, 100 - wear_used)
-        if remaining < 10:
-            deduct(40, f"这块 SSD 的寿命已消耗约 {wear_used}%（剩余不足 10%），已接近设计寿命终点，请立即备份并准备更换。")
-        elif remaining < 20:
-            deduct(25, f"这块 SSD 的剩余寿命约 {remaining}%，磨损明显加快，建议减少大文件反复写入并尽早备份。")
-        elif remaining < 50:
-            deduct(10, f"这块 SSD 的剩余寿命约 {remaining}%，属于正常消耗，建议保持定期备份的习惯。")
+        if "life_remaining" in ignored or "pct_used" in ignored:
+            suppressed.append("SSD 剩余寿命")
+        else:
+            remaining = max(0, 100 - wear_used)
+            if remaining < 10:
+                deduct(40, f"这块 SSD 的寿命已消耗约 {wear_used}%（剩余不足 10%），已接近设计寿命终点，请立即备份并准备更换。")
+            elif remaining < 20:
+                deduct(25, f"这块 SSD 的剩余寿命约 {remaining}%，磨损明显加快，建议减少大文件反复写入并尽早备份。")
+            elif remaining < 50:
+                deduct(10, f"这块 SSD 的剩余寿命约 {remaining}%，属于正常消耗，建议保持定期备份的习惯。")
 
     # ---- 4) 温度 ----
     temp = _to_int(counters.get("Temperature")) if counters else None
     if temp is not None and temp > 0:
-        if temp >= 70:
+        if "current_temp" in ignored:
+            suppressed.append("当前温度")
+        elif temp >= 70:
             deduct(15, f"当前温度 {temp}°C 过高，长期高温会显著加速硬盘老化甚至损坏，建议清理灰尘、改善机箱散热。")
         elif temp >= 60:
             deduct(8, f"当前温度 {temp}°C 偏高，建议检查散热风扇与通风情况。")
 
     # ---- 5) 无法修正的读 / 写错误计数 ----
     if counters:
-        for key, label in (("ReadErrorsUncorrected", "读取"), ("WriteErrorsUncorrected", "写入")):
+        for key, label, ignore_name in (
+            ("ReadErrorsUncorrected", "读取", "uncorrected_read"),
+            ("WriteErrorsUncorrected", "写入", "uncorrected_write"),
+        ):
             value = _to_int(counters.get(key))
             if value is not None and value > 0:
-                deduct(min(15, 8 + value // 50), f"累计出现 {value:,} 次无法修正的{label}错误，可能与坏道、盘体老化或连接不稳定有关，建议尽快备份重要数据并持续观察。")
+                if ignore_name in ignored:
+                    suppressed.append(f"不可修正{label}错误")
+                else:
+                    deduct(min(15, 8 + value // 50), f"累计出现 {value:,} 次无法修正的{label}错误，可能与坏道、盘体老化或连接不稳定有关，建议尽快备份重要数据并持续观察。")
 
     # ---- 5.5) NVMe 健康日志（v1.2 直读通道；无数据时整体跳过，不影响既有规则） ----
     nvme = nvme_health or {}
@@ -235,7 +265,18 @@ def evaluate_disk(
         critical_warning = _to_int(nvme.get("critical_warning")) or 0
         if critical_warning > 0:
             force_danger = True
-            deduct(50, "硬盘自报危险警告信号，硬件可能已出现严重问题，建议立即备份数据。")
+            # v1.1.1：按 NVMe 规范把警告位分解成具名检查（参考硬件狗狗五项设备状态），
+            # 让用户知道「危险」到底危险在哪，而不是一句笼统提示。
+            warning_bits = {
+                1: "备用空间已低于阈值",
+                2: "温度超出紧急阈值（过热）",
+                4: "存储介质可靠性显著退化",
+                8: "已进入只读保护模式（无法再写入）",
+                16: "易失性内存（掉电保护缓存）备份失败",
+            }
+            named = [text for bit, text in warning_bits.items() if critical_warning & bit]
+            detail = "、".join(named) if named else f"未知警告类型（编码 {critical_warning}）"
+            deduct(50, f"硬盘自报危险警告：{detail}，硬件可能已出现严重问题，建议立即备份数据。")
 
         # 可用备用空间：低于固件阈值或低于 10% 属于硬性风险
         spare = _to_int(nvme.get("available_spare_pct"))
@@ -244,36 +285,47 @@ def evaluate_disk(
             (spare_thr is not None and spare < spare_thr) or spare < 10
         )
         if spare_low:
-            force_warning = True
-            threshold_text = spare_thr if spare_thr is not None else 10
-            deduct(
-                40,
-                f"硬盘的可用备用空间只剩 {spare}%（告警阈值 {threshold_text}%），"
-                "坏块快没有可替换的空间了，请立即备份数据。",
-            )
+            if "spare" in ignored:
+                suppressed.append("可用备用空间")
+            else:
+                force_warning = True
+                threshold_text = spare_thr if spare_thr is not None else 10
+                deduct(
+                    40,
+                    f"硬盘的可用备用空间只剩 {spare}%（告警阈值 {threshold_text}%），"
+                    "坏块快没有可替换的空间了，请立即备份数据。",
+                )
 
         # 媒体错误（坏块）：每个扣 8 分，封顶 24 分
         media_errors = _to_int(nvme.get("media_errors"))
         if media_errors is not None and media_errors > 0:
-            deduct(
-                min(24, 8 * media_errors),
-                f"硬盘已记录 {media_errors:,} 个媒体错误（坏块），"
-                "说明存储介质开始出现损伤，建议尽快备份数据并持续观察。",
-            )
+            if "media_errors" in ignored:
+                suppressed.append("媒体错误数")
+            else:
+                deduct(
+                    min(24, 8 * media_errors),
+                    f"硬盘已记录 {media_errors:,} 个媒体错误（坏块），"
+                    "说明存储介质开始出现损伤，建议尽快备份数据并持续观察。",
+                )
 
         # 不安全断电：经常异常断电会损伤硬盘与数据，轻扣提示
         unsafe_shutdowns = _to_int(nvme.get("unsafe_shutdowns"))
         if unsafe_shutdowns is not None and unsafe_shutdowns > 100:
-            deduct(
-                5,
-                f"累计发生 {unsafe_shutdowns:,} 次不正常断电（未正常关机），"
-                "频繁异常断电会缩短硬盘寿命，建议尽量正常关机。",
-            )
+            if "unsafe_shutdowns" in ignored:
+                suppressed.append("不安全断电次数")
+            else:
+                deduct(
+                    5,
+                    f"累计发生 {unsafe_shutdowns:,} 次不正常断电（未正常关机），"
+                    "频繁异常断电会缩短硬盘寿命，建议尽量正常关机。",
+                )
 
         # 使用率（NVMe Percentage Used）：Wear 通道有数据时不重复扣（避免双重计磨损）
         percentage_used = _to_int(nvme.get("percentage_used"))
         if is_ssd and wear_used is None and percentage_used is not None and percentage_used > 0:
-            if percentage_used >= 90:
+            if "pct_used" in ignored or "life_remaining" in ignored:
+                suppressed.append("SSD 使用率")
+            elif percentage_used >= 90:
                 deduct(
                     30,
                     f"这块 SSD 的已使用寿命约 {percentage_used}%，接近设计寿命终点，"
@@ -288,7 +340,9 @@ def evaluate_disk(
         # power_on_hours / 累计读写量只展示不扣分（由 UI / 报告负责展示）
 
     # ---- 6) 事件日志（最近 30 天） ----
-    if error_events >= 20:
+    if "event_count" in ignored and error_events >= 1:
+        suppressed.append("30 天相关事件")
+    elif error_events >= 20:
         deduct(40, f"过去 30 天系统日志记录了 {error_events} 条与这块盘相关的错误/警告，磁盘可能正在持续出错，请立即备份数据并排查。")
     elif error_events >= 8:
         deduct(25, f"过去 30 天系统日志记录了 {error_events} 条与这块盘相关的错误/警告，建议重点观察，尽早备份数据。")
@@ -302,6 +356,13 @@ def evaluate_disk(
     if dirty_volumes:
         letters = "、".join(str(v.get("drive") or "?") for v in dirty_volumes)
         deduct(40, f"分区 {letters} 被系统标记为「损坏位」已置位，文件系统可能存在损坏，建议尽快备份数据，并使用系统自带的磁盘检查工具修复。")
+
+    # ---- 忽略项如实注明（v1.1.1）：评分回归剩余项，但不掩盖被忽略的事实 ----
+    if suppressed:
+        reasons.append(
+            f"已按你的选择忽略 {'、'.join(suppressed)}：这些项不再影响评分，"
+            "但界面上仍保留颜色警示，仅供提醒。"
+        )
 
     # ---- 汇总 ----
     score = int(round(max(0.0, min(100.0, score))))

@@ -275,6 +275,9 @@ class DetectWorker(QThread):
                 if any(str(n) == device_id for n in numbers):
                     disk_volumes.append(volume)
             dirty = [v for v in disk_volumes if v.get("dirty")]
+            # v1.1.1：把用户忽略的指标传给评分引擎——被忽略的项不再扣分，
+            # 评分回归剩余项的真实水平（颜色警示仍保留在界面上）。
+            ignored_keys = get_store().ignored_keys_for(str(disk.get("serial") or ""))
             results.append(
                 {
                     "disk": disk,
@@ -287,7 +290,7 @@ class DetectWorker(QThread):
                     "all_volumes": disk_volumes,
                     "verdict": verdict.evaluate_disk(
                         disk, counters, attrs, event_count, event_recent, dirty,
-                        nvme_map.get(device_id),
+                        nvme_map.get(device_id), ignored_keys=ignored_keys,
                     ),
                 }
             )
@@ -407,11 +410,12 @@ class HistoryPanel(QFrame):
     - 每次体检（手动 / 定时 / 开机静默）完成后追加一条记录；
     - 全部健康显示绿色 ✓；有警告显示黄色 !；危险显示红色 ✗；
     - 记录持久化在本地 data 文件（封顶 200 条自动淘汰最旧），
-      内存占用恒定，不随使用时间增长；
+      界面一次展示最近 30 条、超出部分滚动查看（v1.1.1：用户定稿）；
     - 默认折叠不占地方，折叠状态会被记住。
     """
 
     MAX_DISPLAY_ROWS = 30
+    _SCROLL_MAX_HEIGHT = 260  # 展开时记录区的最大像素高度，超出出现滚动条
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -443,8 +447,16 @@ class HistoryPanel(QFrame):
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(0, 0, 0, 0)
         self._body_layout.setSpacing(1)
-        outer.addWidget(self._body)
-        self._body.setVisible(self._expanded)
+        # v1.1.1：记录区套滚动条（最多 260px 高，超出滚动），界面不因记录多而拉长变形
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("historyScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setMaximumHeight(self._SCROLL_MAX_HEIGHT)
+        self._scroll.setWidget(self._body)
+        outer.addWidget(self._scroll)
+        self._scroll.setVisible(self._expanded)
 
         self.refresh()
 
@@ -452,12 +464,12 @@ class HistoryPanel(QFrame):
     def _on_toggle(self) -> None:
         self._expanded = not self._expanded
         self._store.set_setting("history_expanded", self._expanded)
-        self._body.setVisible(self._expanded)
+        self._scroll.setVisible(self._expanded)
         self._toggle_btn.setText("▾ 收起" if self._expanded else "▸ 展开")
 
     # ------------------------------------------------------------------
     def refresh(self) -> None:
-        """从存储重新渲染记录列表（新在前，最多显示 30 条）。
+        """从存储重新渲染记录列表（新在前，最多显示 30 条，超出滚动查看）。
 
         每条记录可点击展开 / 收起当时的逐盘详情快照。
         """
@@ -465,6 +477,9 @@ class HistoryPanel(QFrame):
             item = self._body_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # v1.1.1 修复文字重叠：deleteLater 是延迟删除，控件在事件循环
+                # 空闲前仍挂在原位置可见，会与新行叠在一起；先隐藏立刻生效。
+                widget.hide()
                 widget.deleteLater()
 
         history = self._store.history()
@@ -518,6 +533,9 @@ class HistoryPanel(QFrame):
 
 class DiskCard(QFrame):
     """单块磁盘的卡片，点击可展开 / 收起检测详情。"""
+
+    # v1.1.1：忽略 / 恢复后本盘评分已重算，通知主窗口刷新概览与托盘
+    rescored = Signal(dict)
 
     def __init__(
         self, result: dict, parent: QWidget | None = None, admin: bool = False,
@@ -925,7 +943,12 @@ class DiskCard(QFrame):
         return card
 
     def _make_metric_cell(self, serial: str, item: dict, store) -> QWidget:
-        """单个指标单元格：label + 数值（按警示等级着色）+ 异常项忽略按钮。"""
+        """单个指标单元格：label + 数值（按警示等级着色）+ 异常项忽略按钮。
+
+        v1.1.1 语义：忽略只影响评分——被忽略的项不再扣分，评分回归剩余项
+        的真实水平；此行颜色警示仍保留，既给用户「自我安慰」的空间，
+        也不掩盖事实。
+        """
         key = str(item.get("key") or "")
         level = int(item.get("level") or 0)
         text = str(item.get("text") or "—")
@@ -939,12 +962,11 @@ class DiskCard(QFrame):
 
         label = QLabel(str(item.get("label") or ""))
         label.setObjectName("metricLabel")
-        value = QLabel(("✓ " + text) if ignored else text)
+        value = QLabel(text)
+        # 忽略后仍按警示等级着色（v1.1.1：不再是健康绿，颜色警示保留）
+        value.setObjectName("metricValue" if level == metrics.LEVEL_OK else f"metricValueL{level}")
         if ignored:
-            value.setObjectName("metricValueIgnored")
-            value.setToolTip("已忽略此警示，点击「恢复」可重新显示")
-        else:
-            value.setObjectName("metricValue" if level == metrics.LEVEL_OK else f"metricValueL{level}")
+            value.setToolTip("已忽略：此项不再影响评分（颜色警示仅供提醒）")
         value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(label)
         row.addWidget(value, 1)
@@ -953,27 +975,59 @@ class DiskCard(QFrame):
             btn = QPushButton("恢复" if ignored else "忽略")
             btn.setObjectName("ignoreBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip("忽略后此项显示为健康绿色；评分不受影响，始终保持真实")
+            btn.setToolTip("忽略后评分回归满分；此行颜色警示仍保留，仅供提醒")
             btn.setFixedHeight(18)
 
-            def _toggle(checked: bool = False, *, cell_key: str = ignore_key, cell_item: dict = item) -> None:
-                now_ignored = not store.is_ignored(cell_key)
-                store.set_ignored(cell_key, now_ignored)
+            def _toggle(checked: bool = False) -> None:
+                now_ignored = not store.is_ignored(ignore_key)
+                store.set_ignored(ignore_key, now_ignored)
                 btn.setText("恢复" if now_ignored else "忽略")
-                if now_ignored:
-                    value.setText("✓ " + cell_item["text"])
-                    value.setObjectName("metricValueIgnored")
-                    value.setToolTip("已忽略此警示，点击「恢复」可重新显示")
-                else:
-                    value.setText(cell_item["text"])
-                    lvl = int(cell_item.get("level") or 0)
-                    value.setObjectName("metricValue" if lvl == metrics.LEVEL_OK else f"metricValueL{lvl}")
-                    value.setToolTip("")
-                _repolish(value)
+                value.setToolTip(
+                    "已忽略：此项不再影响评分（颜色警示仅供提醒）" if now_ignored else ""
+                )
+                # v1.1.1：立即重算本盘评分并刷新卡片（评分回归剩余项水平）
+                self._rescore_after_toggle()
 
             btn.clicked.connect(_toggle)
             row.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
         return cell
+
+    def _rescore_after_toggle(self) -> None:
+        """忽略 / 恢复后立即重算本盘评分并原地刷新（药丸、红边、建议、详情）。
+
+        复用 apply_result 的渲染路径但不重新走体检：数据取 self._result，
+        评分用当前忽略集合重算，展开状态保持不变。
+        """
+        result = dict(self._result)
+        disk = result.get("disk") or {}
+        ignored = get_store().ignored_keys_for(str(disk.get("serial") or ""))
+        verdict_data = verdict.evaluate_disk(
+            disk, result.get("counters"), result.get("smart_attrs") or [],
+            result.get("event_count") or 0, result.get("event_recent") or [],
+            result.get("dirty_volumes") or [], result.get("nvme_health"),
+            ignored_keys=ignored,
+        )
+        result["verdict"] = verdict_data
+        self._result = result
+
+        level = str(verdict_data.get("level") or "warning")
+        self.setObjectName("diskCardDanger" if level == "danger" else "diskCard")
+        _repolish(self)
+
+        # 详情面板重建（保留当前展开状态）
+        was_visible = self._detail.isVisible()
+        layout = self.layout()
+        old_index = layout.indexOf(self._detail)
+        self._detail.hide()  # deleteLater 是延迟删除，先隐藏避免新旧叠加
+        layout.removeWidget(self._detail)
+        self._detail.deleteLater()
+        self._detail = self._build_detail(result)
+        self._detail.setVisible(was_visible)
+        layout.insertWidget(old_index if old_index >= 0 else layout.count(), self._detail)
+
+        # 药丸档位色 + 分数滚动
+        self._start_score_animation(int(verdict_data.get("score") or 0), verdict_data)
+        self.rescored.emit(result)
 
     # ------------------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名约定
@@ -1050,10 +1104,26 @@ class MainWindow(QMainWindow):
         self._autostart_check.blockSignals(True)
         self._autostart_check.setChecked(autostart.is_enabled())
         self._autostart_check.blockSignals(False)
+        # v1.1.1 修复：上面 enable() 发生在托盘菜单创建之后，菜单勾选还停在旧状态；
+        # 初始化完成后按真实状态补一次同步（否则「界面已勾选、右键菜单未勾选」）。
+        if self._tray is not None:
+            self._tray.sync_autostart(autostart.is_enabled())
 
     # ------------------------------------------------------------------
     # UI 构建
     # ------------------------------------------------------------------
+    def _show_v12_teaser(self) -> None:
+        """v1.2 预热弹窗：预告开发中的功能，征集用户建议。"""
+        QMessageBox.information(
+            self,
+            "新版预告 · v1.2 开发中",
+            "下一个版本正在开发中，计划加入：\n\n"
+            "· 表面扫描——逐扇区检测坏道，抓住 SMART 还没记上的故障\n"
+            "· 邮件 / 微信提醒——健康值达到阈值时自动推送（开发中）\n"
+            "· USB 移动硬盘识别增强\n\n"
+            "你最想要哪个功能？欢迎到 GitHub 仓库提 Issue 留言，你的建议很宝贵。",
+        )
+
     def _build_ui(self, version: str) -> None:
         central = QWidget()
         central.setObjectName("root")
@@ -1062,16 +1132,19 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
 
-        # ---- 顶部标题栏（v1.3：按用户要求移除右上角徽章） ----
+        # ---- 顶部栏（v1.1.1：移除窗口内标题 + 版本号——窗口标题栏已有，不重复展示；
+        #      仅保留右上角 v1.2 预热角标） ----
         header = QHBoxLayout()
         header.setSpacing(8)
-        title = QLabel("挖兔硬盘精灵")
-        title.setObjectName("title")
-        ver_label = QLabel(version)
-        ver_label.setObjectName("badgeGray")
-        header.addWidget(title)
-        header.addWidget(ver_label)
         header.addStretch()
+        # ---- v1.2 预热角标（v1.1.1）：右上角淡灰小问号，点击看新版预告并征集建议 ----
+        hint = QPushButton("?")
+        hint.setObjectName("v12Hint")
+        hint.setCursor(Qt.CursorShape.PointingHandCursor)
+        hint.setFixedSize(22, 22)
+        hint.setToolTip("新版预告 · 点我看看")
+        hint.clicked.connect(self._show_v12_teaser)
+        header.addWidget(hint)
         root.addLayout(header)
 
         # ---- 基础模式提示条 ----
@@ -1327,9 +1400,27 @@ class MainWindow(QMainWindow):
                 {"disk": disk, "verdict": {}}, admin=self._admin,
                 tip_seed=self._detect_round, loading=True,
             )
+            card.rescored.connect(self._on_card_rescored)  # v1.1.1：忽略后刷新概览/托盘
             self._cards_by_device[device_id] = card
             self._list_layout.insertWidget(self._list_layout.count() - 1, card)
             QTimer.singleShot(80 * index, lambda widget=card: _fade_in(widget))
+
+    def _on_card_rescored(self, result: dict) -> None:
+        """v1.1.1：某卡片忽略 / 恢复后重算概览数字并同步托盘。
+
+        卡片自身已完成评分与详情刷新，这里只做全局汇总层面的一致性。
+        """
+        device_id = str((result.get("disk") or {}).get("device_id") or "")
+        for index, existing in enumerate(self._results):
+            if str((existing.get("disk") or {}).get("device_id") or "") == device_id:
+                self._results[index] = result
+                break
+        summary = verdict.summarize(self._results)
+        self._ov_total.setText(str(summary["total"]))
+        self._ov_healthy.setText(str(summary["healthy"]))
+        self._ov_bad.setText(str(summary["warning"] + summary["danger"]))
+        if self._tray is not None:
+            self._tray.update_results(self._results)
 
     def _on_step_started(self, index: int) -> None:
         """步骤进入进行中：清单 spinner + 进度条平滑推进。"""
@@ -1399,7 +1490,7 @@ class MainWindow(QMainWindow):
             self._tray.stop_activity()
 
     def _record_history(self, results: list, ok: bool, elapsed: float, source: str | None = None) -> None:
-        """把本次体检结果写入持久化体检记录并刷新面板（封顶 200 条）。
+        """把本次体检结果写入持久化体检记录并刷新面板（本地保留 200 条，界面展示 30 条）。
 
         Args:
             source: 覆盖本次来源（托盘定时体检会传「定时体检」）；

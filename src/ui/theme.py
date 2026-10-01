@@ -122,6 +122,13 @@ QLabel#historyRowWarn { font-size: 12px; color: #B45309; padding: 1px 4px; }
 QLabel#historyRowBad { font-size: 12px; color: #C93A3A; padding: 1px 4px; }
 QLabel#historyEmpty { font-size: 12px; color: #9CA3AF; padding: 2px 4px; }
 QLabel#historyDetail { font-size: 12px; color: #6B7280; padding: 1px 4px 3px 10px; }
+QScrollArea#historyScroll { background: transparent; border: none; }
+QScrollArea#historyScroll > QWidget > QWidget { background: transparent; }
+
+/* ---- v1.2 预热角标（v1.1.1：右上角淡灰小问号） ---- */
+QPushButton#v12Hint { background: transparent; color: #C9CDD3; border: none;
+                      border-radius: 11px; font-size: 13px; font-weight: 700; }
+QPushButton#v12Hint:hover { color: #9CA3AF; background: #F3F4F6; }
 
 /* ---- 提醒方案下拉框（v1.4） ---- */
 QComboBox#profileCombo { background: #FFFFFF; color: #374151; border: 1px solid #E5E7EB;

@@ -143,6 +143,36 @@ def test_tray_menu_actions_exist():
         controller.hide_tray()
 
 
+def test_tray_autostart_check_follows_real_state():
+    """v1.1.1：右键菜单「开机启动」勾选必须与真实自启动状态一致。
+
+    背景 bug：初始化时序导致界面复选框已勾选、右键菜单未勾选。
+    修复 = 菜单弹出前 _refresh_dynamic_checks 按真实状态刷新。
+    """
+    from core import autostart
+
+    was_enabled = autostart.is_enabled()
+    controller, _window = _make_controller()
+    try:
+        autostart.enable()
+        # 人为制造脱节（模拟旧 bug 的中间状态）
+        controller._act_autostart.blockSignals(True)
+        controller._act_autostart.setChecked(False)
+        controller._act_autostart.blockSignals(False)
+        assert controller._act_autostart.isChecked() is False
+
+        controller._refresh_dynamic_checks()  # 菜单弹出前会调用
+        assert controller._act_autostart.isChecked() is True, "真实已启用时菜单应显示勾选"
+
+        autostart.disable()
+        controller._refresh_dynamic_checks()
+        assert controller._act_autostart.isChecked() is False, "真实已停用时菜单应显示未勾选"
+    finally:
+        # 还原测试前的真实自启动状态
+        autostart.enable() if was_enabled else autostart.disable()
+        controller.hide_tray()
+
+
 def test_tray_single_click_wakes_window():
     controller, window = _make_controller()
     try:

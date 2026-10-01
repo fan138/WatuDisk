@@ -5,8 +5,9 @@
 %APPDATA%\\DiskGuard\\watu_disk_sprite.json——exe 目录保持永远干净
 （用户要求不带 data 文件夹），这也是绝大多数 Windows 软件的惯例：
 隐藏在用户配置目录里、随软件卸载/手删即无痕。
-- 体检记录封顶 MAX_HISTORY 条（默认 200），超出自动淘汰最旧的——
+- 体检记录封顶 MAX_HISTORY 条（200 条），超出自动淘汰最旧的——
   文件体积与内存占用恒定（约几十 KB），绝不无限增长；
+  界面一次只展示最近 30 条并支持滚动（v1.1.1：用户定稿「存 200 显 30」）；
 - 写盘时机：仅数据变化时原子写入（临时文件 + os.replace），不留临时垃圾；
 - 写入失败静默降级为纯内存模式（功能不受影响，重启后记录丢失）；
 - 兼容迁移：若旧版曾把数据存在 exe 旁 data/ 目录，首次运行自动搬过来。
@@ -22,7 +23,7 @@ import shutil
 import sys
 import threading
 
-MAX_HISTORY = 200
+MAX_HISTORY = 200  # 本地持久化保留最近 200 条（界面只展示最近 30 条 + 滚动条）
 _DATA_VERSION = 1
 
 
@@ -155,6 +156,19 @@ class Store:
             elif not ignored and key in self._data["ignored"]:
                 self._data["ignored"].remove(key)
             self._save_locked()
+
+    def ignored_keys_for(self, serial: str) -> set[str]:
+        """返回某块盘（按序列号）被忽略的指标 key 集合（v1.1.1）。
+
+        供评分引擎按盘过滤扣分项：verdict.evaluate_disk(..., ignored_keys=...)。
+        """
+        prefix = f"{serial or '?'}|"
+        with self._lock:
+            return {
+                entry.split("|", 1)[1]
+                for entry in self._data["ignored"]
+                if entry.startswith(prefix)
+            }
 
     # ------------------------------------------------------------------
     # 气泡提醒日志（v1.5：桌面表格的数据源，封顶 300 条）

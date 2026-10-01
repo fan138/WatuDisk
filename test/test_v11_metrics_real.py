@@ -156,10 +156,12 @@ def _metric_values(result: dict) -> dict[str, str]:
 
 
 def test_metrics_grid_none_shows_dash():
-    """counters 为空时专业指标全部显示「—」。
+    """counters 为空时：核心行显示「—」，无数据源的行整行隐藏（v1.1.1 去「—」改版）。
 
     v1.3 例外：「容量」与「30 天相关事件」是恒有值的信息项——
     容量来自磁盘枚举，0 条事件本身是有意义的健康数据。
+    v1.1.1 起无数据源的行（加载/卸载、历史最高温、错误计数、NVMe 专属等）
+    直接隐藏，不再显示无信息量的「—」。
     """
     result = {
         "disk": {"device_id": "0", "model": "QA Disk", "media_type": "SSD", "bus_type": "NVMe", "size": 1, "serial": "X"},
@@ -174,14 +176,18 @@ def test_metrics_grid_none_shows_dash():
     values = _metric_values(result)
     assert values, "未收集到专业指标"
     informational = {"容量", "30 天相关事件"}
+    core_dash = {"通电时间", "通电次数", "当前温度"}
     for label, value in values.items():
         if label in informational:
             continue
         assert value == "—", f"{label} 在无数据时应显示「—」，实际「{value}」"
+        assert label in core_dash, f"非核心行 {label} 在无数据时应整行隐藏"
     assert values.get("30 天相关事件") == "0 条"
-    # 关键新字段在列
-    assert "通电时间" in values and "通电次数" in values
-    assert "历史最高温度" in values and "剩余寿命（SSD）" in values
+    # 无数据源的行必须隐藏而非「—」
+    for hidden in ("加载/卸载循环", "主轴启停次数", "剩余寿命（SSD）", "历史最高温度",
+                   "不可修正读取错误", "累计写入量", "可用备用空间", "不安全断电次数",
+                   "媒体错误数", "剩余空间"):
+        assert hidden not in values, f"{hidden} 无数据时应隐藏"
 
 
 def test_metrics_grid_with_values():
