@@ -2,12 +2,17 @@
 
 > 挖兔品牌系列工具 · 硬盘健康守护
 > 免安装 · 不联网 · 只读检测 · 单文件绿色版
+>
+> **WatuDiskSprite** — a free, offline, read-only Windows disk-health guardian: SATA/NVMe SMART, six-tier color alerts, silent boot-time scan, and one-click HTML report.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://www.microsoft.com/windows)
 [![Package](https://img.shields.io/badge/package-单文件绿色版-brightgreen)](https://github.com/fan138/WatuDisk/releases)
 [![Language](https://img.shields.io/badge/language-Python%203.13-orange)](https://www.python.org)
 [![UI](https://img.shields.io/badge/UI-PySide6%20(Qt)-purple)](https://doc.qt.io/qtforpython/)
+[![GitHub release](https://img.shields.io/github/v/release/fan138/WatuDisk)](https://github.com/fan138/WatuDisk/releases)
+[![Downloads](https://img.shields.io/github/downloads/fan138/WatuDisk/total)](https://github.com/fan138/WatuDisk/releases)
+[![Stars](https://img.shields.io/github/stars/fan138/WatuDisk)](https://github.com/fan138/WatuDisk/stargazers)
 
 ![主界面预览](preview.png)
 
@@ -46,6 +51,7 @@
 
 从 [Releases](https://github.com/fan138/WatuDisk/releases) 下载 `WatuDiskSprite.exe`，双击即可运行，无需安装。
 
+- 国内用户若 GitHub 访问缓慢，可关注后续 Gitee 镜像（筹备中）；
 - 读取完整 SMART 数据需要管理员权限（程序会自动请求 UAC 提权）；
 - 若未以管理员身份运行，部分检测项会受限，界面会明确提示。
 
@@ -103,6 +109,24 @@ python -m PyInstaller --clean --noconfirm `
   --distpath deploy --workpath build/pyinstaller `
   src/build/diskguard.spec
 ```
+
+## 🚀 即将到来（v1.2 路线）
+
+软件保持活跃迭代，v1.2 计划（部分）：
+
+- **健康分 / 温度趋势图**：基于本地体检记录绘制折线，肉眼可见硬盘老化轨迹；
+- **表面扫描（坏道检测）**：补齐「SMART 全绿但盘已坏」的盲区，物理坏道早知道；
+- **阈值提醒**：托盘气泡 + 邮件 / Webhook（Server酱、PushPlus），状态变化才提醒，不打扰；
+- **USB 桥接透传增强 / Intel VMD·RAID 检测增强 / SAS 评估**；
+- **接口速率显示、NVMe 传感器细节、轻量自检提速**。
+
+具体进度见 [v1.2 路线图 Issue](https://github.com/fan138/WatuDisk/issues)；欢迎在 Issues 里提需求与反馈。
+
+## 💬 反馈与共建
+
+- 遇到问题、想要新功能、或发现误报？请到 [Issues](https://github.com/fan138/WatuDisk/issues) 留言；
+- 这是一个自由开源（GPL-3.0）项目，欢迎 Star、Fork 与 PR；
+- 软件完全离线、只读、不收集任何数据，可放心使用。
 
 ## 📄 许可证
 
