@@ -1132,20 +1132,8 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
 
-        # ---- 顶部栏（v1.1.1：移除窗口内标题 + 版本号——窗口标题栏已有，不重复展示；
-        #      仅保留右上角 v1.2 预热角标） ----
-        header = QHBoxLayout()
-        header.setSpacing(8)
-        header.addStretch()
-        # ---- v1.2 预热角标（v1.1.1）：右上角淡灰小问号，点击看新版预告并征集建议 ----
-        hint = QPushButton("?")
-        hint.setObjectName("v12Hint")
-        hint.setCursor(Qt.CursorShape.PointingHandCursor)
-        hint.setFixedSize(22, 22)
-        hint.setToolTip("新版预告 · 点我看看")
-        hint.clicked.connect(self._show_v12_teaser)
-        header.addWidget(hint)
-        root.addLayout(header)
+        # ---- 顶部不再放标题/角标（v1.1.1 定稿：窗口标题栏已有软件名与版本号，
+        #      右上角问号移到底部「只读检测」文字后，顶部不留空位） ----
 
         # ---- 基础模式提示条 ----
         if not self._admin:
@@ -1236,6 +1224,14 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         note.setToolTip("气泡提醒与提醒方案：请右键任务栏托盘图标 → 「提醒设置」")
         btn_row.addWidget(note, 0, Qt.AlignmentFlag.AlignBottom)
+        # ---- v1.2 预热角标（v1.1.1）：移到底部「只读检测」文字后，顶部不留空位 ----
+        hint = QPushButton("?")
+        hint.setObjectName("v12Hint")
+        hint.setCursor(Qt.CursorShape.PointingHandCursor)
+        hint.setFixedSize(22, 22)
+        hint.setToolTip("新版预告 · 点我看看")
+        hint.clicked.connect(self._show_v12_teaser)
+        btn_row.addWidget(hint, 0, Qt.AlignmentFlag.AlignBottom)
         bottom.addLayout(btn_row)
 
         root.addLayout(bottom)

@@ -107,6 +107,21 @@ def test_qa_attr_dict_micron_ca_not_misleading():
     assert "厂商" in ATTR_NAMES[0xCA], ATTR_NAMES[0xCA]
 
 
+def test_qa_vendor_private_range_named_not_unknown():
+    """v1.1.2：0xA0-0xA9 与 0xF5 是厂商私有区段，标「厂商私有属性」而非「未知属性」。
+
+    来源：HYN2TB 实测报告出现 10 个「未知属性 0xA0-0xA9/0xF5」；
+    ATA 规范中该区段本就是厂商私有，统一诚实标注、不猜测具体含义。
+    """
+    for attr_id in (0xA0, 0xA3, 0xA5, 0xA9, 0xF5):
+        name = attr_display_name(attr_id)
+        assert "厂商私有" in name, (attr_id, name)
+        assert "未知" not in name, (attr_id, name)
+    # 真正的未知属性（区段之外）仍回退「未知属性 0xXX」
+    assert attr_display_name(0x99).startswith("未知属性")
+    assert attr_display_name(0x13).startswith("未知属性")
+
+
 # ---------------------------------------------------------------- v1.1.1 SATA 兜底填格
 def _sata_hyn_result() -> dict:
     """还原 52pojie 坛友 HYN2TB（SATA SSD，系统计数器大面积缺项）的实测形态。"""
