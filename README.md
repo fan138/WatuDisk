@@ -15,7 +15,7 @@
 [![Stars](https://img.shields.io/github/stars/fan138/WatuDisk)](https://github.com/fan138/WatuDisk/stargazers)
 [![Gitee stars](https://img.shields.io/gitee/stars/fan188/WatuDisk?logo=gitee&color=c71d23)](https://gitee.com/fan188/WatuDisk)
 
-![主界面预览](preview.png)
+![挖兔硬盘精灵主界面：多盘概览、六档颜色预警、体检记录](images/screenshot-main.jpg)
 
 ## 软件简介
 
@@ -40,6 +40,12 @@
 ## 🖥️ 主界面
 
 顶部为软件名与版本徽章；中间是「检测到硬盘 / 健康 / 警告 + 危险」三宫格概览与逐盘卡片（点击展开专业指标网格、SMART 明细、事件摘要与建议）；底部是 7 步体检进度与「开始全盘检测 / 导出报告 / 开机自动启动 / 开机静默体检」开关，以及 GitHub 链接。
+
+## 🧾 体检报告示例
+
+检测完成后点「导出报告」，一键生成完整本地 HTML 报告（可直接浏览器打开、留存或分享）：
+
+![体检报告示例](images/screenshot-report.jpg)
 
 ## 🔒 隐私与安全承诺
 
