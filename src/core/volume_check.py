@@ -180,15 +180,19 @@ def _query_dirty(drive_letter: str) -> bool | None:
 
 
 def _get_volume_space() -> dict[str, dict]:
-    """获取各卷容量与剩余空间（Get-Volume，只读、快）。
+    """获取各卷容量、剩余空间与文件系统类型（Get-Volume，只读、快）。
+
+    v1.2（#13）：增返回 fstype，供判读层区分 exFAT/FAT 等跨平台盘——
+    这类盘的脏位多为未安全弹出或被 PS5 等设备使用所致，属常见现象。
 
     Returns:
-        {'C': {'size': int, 'free': int, 'free_pct': float}, ...}；失败返回空。
+        {'C': {'size': int, 'free': int, 'free_pct': float, 'fstype': str}, ...}；
+        失败返回空。
     """
     command = (
         "Get-Volume -ErrorAction SilentlyContinue | "
         "Where-Object { $_.DriveLetter } | "
-        "Select-Object DriveLetter, Size, SizeRemaining | ConvertTo-Json -Depth 2"
+        "Select-Object DriveLetter, Size, SizeRemaining, FileSystemType | ConvertTo-Json -Depth 2"
     )
     data = run_ps_json(command, timeout=20)
     result: dict[str, dict] = {}
@@ -208,17 +212,21 @@ def _get_volume_space() -> dict[str, dict]:
             "size": int(size),
             "free": int(free),
             "free_pct": round(free / size * 100.0, 1),
+            "fstype": str(item.get("FileSystemType") or "").strip(),
         }
     return result
 
 
 def check_volumes() -> list[dict]:
-    """检查所有本地卷的损坏位标志 + 剩余空间（同一卷只查一次 dirty）。
+    """检查所有本地卷的损坏位标志 + 剩余空间 + 文件系统类型（同一卷只查一次 dirty）。
+
+    v1.2（#13）：每项增 fstype 字段（来自 Get-Volume 的 FileSystemType），
+    供 verdict 区分 exFAT/FAT 跨平台盘的常见脏位场景。
 
     Returns:
         [{drive: 'C:', dirty: bool|None, disk_number: int|None,
           disk_numbers: [int, ...], size: int|None, free: int|None,
-          free_pct: float|None}, ...]；
+          free_pct: float|None, fstype: str}, ...]；
         跨盘卷的 disk_numbers 可含多个磁盘；整体失败返回空列表。
     """
     partitions = _get_partition_map()
@@ -238,6 +246,7 @@ def check_volumes() -> list[dict]:
                 "size": space.get("size"),
                 "free": space.get("free"),
                 "free_pct": space.get("free_pct"),
+                "fstype": space.get("fstype", ""),
             }
         )
     return results

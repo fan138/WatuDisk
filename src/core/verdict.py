@@ -101,6 +101,18 @@ _SMART_C5 = 0xC5  # 待映射扇区
 _SMART_05 = 0x05  # 重映射扇区
 _SMART_C7 = 0xC7  # 接口传输错误（CRC）
 
+# v1.2（#16）：CRC「提示换线」的告警阈值。
+# 与 metrics.level_for('crc_errors') 的 CAUTION 边界（>=100）保持严格一致，
+# 消除「指标判正常却扣分弹换线」的自相矛盾（见坛友 TOSHIBA HDWD130 反馈）。
+_CRC_ALERT_THRESHOLD = 100
+
+# v1.2（#13）：脏位（Dirty Bit）在「无其它硬件信号」时的轻扣分档位。
+# 脏位是文件系统级标志，常见于未安全弹出 / 跨系统使用（如 PS5 + exFAT），
+# 不等于硬盘硬件损坏，故无硬件信号时只轻扣并给出安抚+修复指引。
+_DIRTY_LIGHT_PENALTY = 12
+# 同时存在硬件异常信号时，脏位作为「叠加问题」按此分扣。
+_DIRTY_WITH_HARDWARE_PENALTY = 40
+
 
 def _raw_of(smart_map: dict[int, dict], attr_id: int) -> int:
     """取指定属性的原始值，缺失返回 0。"""
@@ -215,21 +227,63 @@ def evaluate_disk(
     if c7 > 0:
         if "crc_errors" in ignored:
             suppressed.append("接口错误（CRC）")
+        elif c7 >= _CRC_ALERT_THRESHOLD:
+            # v1.2（#16）：阈值与 metrics.py 的 CAUTION 分级（>=100）严格对齐。
+            # 此前只要 c7>0 就扣分并弹「换 SATA 线」，与指标表判「正常」自相矛盾、
+            # 对微量累计过度提示。仅在百次以上且持续累积时才提示换线。
+            deduct(
+                min(10, 3 + c7 // 100),
+                f"接口传输错误（CRC）累计 {c7:,} 次，数值明显偏高。"
+                "这通常是数据线或接口接触不良导致的，建议台式机更换 SATA 线后重新检测；"
+                "若换线后仍持续增长，请进一步检查主板接口。",
+            )
         else:
-            deduct(min(10, 3 + c7 // 100), f"检测到 {c7} 次接口传输错误（CRC），多数是数据线或接口接触不良，台式机可尝试更换 SATA 线后重新检测。")
+            # 微量累计属正常范围（机械盘普遍个位数），指标表已判「正常」，此处不扣分，
+            # 仅如实告知，避免用户看到「绿色正常」却又被建议换线而困惑。
+            reasons.append(
+                f"接口传输错误（CRC）累计 {c7} 次，属正常范围内的偶发，无需处理；"
+                "只有短时间内持续快速增长才需要留意数据线或接口。"
+            )
 
     # ---- 3) SSD 磨损（Wear 为已消耗寿命百分比，剩余 = 100 - Wear） ----
     media = str(disk.get("media_type") or "").upper()
     bus = str(disk.get("bus_type") or "").upper()
     is_ssd = media == "SSD" or bus == "NVME"
     wear_used = _to_int(counters.get("Wear")) if counters else None
+    # v1.2（#18）：交叉校验「寿命耗尽」是否可信。
+    # 部分早期 SATA SSD（如 2013 年的金士顿 SV300S37A240G）硬件不提供寿命/磨损
+    # 数据，Windows 的 Get-StorageReliabilityCounter 会填回默认 Wear=100。
+    # 若照单全收就会把好盘判成「寿命耗尽、立即更换」——这是最恶劣的一类误报。
+    # 判据：真要报废的盘必然伴随坏块增长，故当所有硬件告警指标（重映射/待映射/
+    # 无法修正/NVMe 媒体错误）全为 0 时，不采信「寿命已耗尽」这一结论。
+    # 注意：此处（第 3 节）早于下方第 5.5 节的 `nvme = nvme_health or {}`，
+    # 因此必须直接用入参 nvme_health，不能引用尚未赋值的局部变量 nvme。
+    _nvme_map = nvme_health or {}
+    nvme_media_errors_for_wear = _to_int(_nvme_map.get("media_errors"))
+    hardware_clean = (
+        c6 == 0
+        and c5 == 0
+        and c05 == 0
+        and (nvme_media_errors_for_wear is None or nvme_media_errors_for_wear == 0)
+    )
     if is_ssd and wear_used is not None and wear_used >= 0:
         if "life_remaining" in ignored or "pct_used" in ignored:
             suppressed.append("SSD 剩余寿命")
         else:
             remaining = max(0, 100 - wear_used)
             if remaining < 10:
-                deduct(40, f"这块 SSD 的寿命已消耗约 {wear_used}%（剩余不足 10%），已接近设计寿命终点，请立即备份并准备更换。")
+                # 仅当 wear_used 恰为 100（即剩余 0%）且硬件告警全为零时才判为
+                # 「无寿命数据」：100 正是 Windows 在无数据时填的默认值，且真报废的盘
+                # 必然伴随坏块增长；而 Wear=95 这类非默认值属真实测量，仍按剩余寿命判读。
+                if wear_used == 100 and hardware_clean:
+                    # 硬件指标全零却报寿命耗尽 → 判定为「无寿命数据」而非真快报废
+                    reasons.append(
+                        f"这款 SSD 未提供寿命数据（较早期硬盘常见），系统给出的剩余寿命数值"
+                        f"（{remaining}%）仅供参考、不能据此判断；目前重映射、待映射、无法修正扇区"
+                        f"均为 0，硬件指标正常，请放心使用并保持定期备份。"
+                    )
+                else:
+                    deduct(40, f"这块 SSD 的寿命已消耗约 {wear_used}%（剩余不足 10%），已接近设计寿命终点，请立即备份并准备更换。")
             elif remaining < 20:
                 deduct(25, f"这块 SSD 的剩余寿命约 {remaining}%，磨损明显加快，建议减少大文件反复写入并尽早备份。")
             elif remaining < 50:
@@ -352,10 +406,49 @@ def evaluate_disk(
         sample = recent_events[0].get("message", "") if recent_events else ""
         deduct(8, f"过去 30 天系统日志记录了 {error_events} 条与这块盘相关的错误/警告" + (f"，例如：{sample}" if sample else "") + "。")
 
-    # ---- 7) 卷损坏位 ----
+    # ---- 7) 卷损坏位（v1.2 #13：与「硬件故障」明确区分） ----
+    # 脏位（Dirty Bit）是**文件系统**层标志，常见于未安全弹出 / 跨系统使用，
+    # 不等于硬盘硬件损坏。故按「有无其它硬件异常信号」分层扣分，
+    # 并把「可能存在损坏」这类强暗示改为可执行的修复指引（chkdsk /f）。
     if dirty_volumes:
         letters = "、".join(str(v.get("drive") or "?") for v in dirty_volumes)
-        deduct(40, f"分区 {letters} 被系统标记为「损坏位」已置位，文件系统可能存在损坏，建议尽快备份数据，并使用系统自带的磁盘检查工具修复。")
+        # 该盘是否存在硬件类异常信号（SMART 关键项 / NVMe 媒体错误 / 系统级不健康）
+        nvme_media_errors = _to_int(nvme.get("media_errors"))
+        has_hardware_signal = bool(
+            c6 > 0
+            or c5 > 0
+            or c05 > 0
+            or (nvme_media_errors is not None and nvme_media_errors > 0)
+            or force_danger
+            or force_warning
+        )
+        # 跨平台文件系统（exFAT/FAT）脏位更常见于 PS5 等设备与未安全弹出场景
+        fstypes = {str(v.get("fstype") or "").upper() for v in dirty_volumes}
+        cross_platform = bool(fstypes & {"EXFAT", "FAT", "FAT32"})
+
+        if has_hardware_signal:
+            # 硬件已有异常，脏位叠加其上 -> 维持重扣，措辞偏「需尽快处理」
+            deduct(
+                _DIRTY_WITH_HARDWARE_PENALTY,
+                f"分区 {letters} 的文件系统脏位已置位，且该盘同时存在硬件异常指标，"
+                "建议尽快备份数据，并使用系统磁盘检查工具（管理员命令提示符执行 chkdsk /f）修复。",
+            )
+        elif cross_platform:
+            # exFAT/FAT 等跨平台盘：多为正常使用痕迹，轻扣 + 明确安抚
+            deduct(
+                _DIRTY_LIGHT_PENALTY,
+                f"分区 {letters} 检测到文件系统脏位（Dirty Bit）。"
+                "这只是文件系统留下的小记号，多为上次没有正常弹出或被其他设备（如 PS5）使用过，"
+                "**不代表硬盘硬件损坏**。如需清除，可用管理员命令提示符执行 chkdsk /f。",
+            )
+        else:
+            # 仅有脏位、其它一切正常：轻扣 + 安抚
+            deduct(
+                _DIRTY_LIGHT_PENALTY,
+                f"分区 {letters} 检测到文件系统脏位（Dirty Bit）。"
+                "这是文件系统层面的标记，常见于未安全弹出或异常断电，"
+                "**与硬盘硬件健康无关**。如需清除，可用管理员命令提示符执行 chkdsk /f。",
+            )
 
     # ---- 忽略项如实注明（v1.1.1）：评分回归剩余项，但不掩盖被忽略的事实 ----
     if suppressed:

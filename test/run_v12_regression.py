@@ -24,6 +24,15 @@ QA_V12_MODULES = [
     "test_v12_ui_report_qa",
     "test_v110_usb_unsupported",
     "test_v111_ignore_rescore",
+    "test_v12_wear_false_alarm_qa",  # v1.2 #18 早期 SSD「0% 寿命」误报
+    "test_v12_greeting_time_slot_qa",  # v1.2 开机问候「时段串味」（14 点说深夜）
+    "test_v12_enumerate_fallback_qa",  # v1.2 #12 磁盘枚举双通道兜底（找不到硬盘）
+    "test_v12_score_explain_qa",  # v1.2 #5 健康分口径说明（分数与其他工具对不上）
+    "test_v12_surface_scan_qa",  # v1.2 #3/#4 盘面扫描（SMART 全绿但盘不稳 / 缺坏道扫描）
+    "test_v12_report_and_ui_polish_qa",  # v1.2 报告含扫描结果+GitHub反馈链接+记录不遮挡卡片
+    "test_v12_grid_heatmap_qa",  # v1.2 盘面地图（20×20 格子热力图 + 响应时间维度 + 抽查密度防误导）
+    "test_v12_surface_scan_dialog_qa",  # v1.2 对话框交互增强（按钮合并/隐藏后台扫/多盘连扫/结果复用）
+    "test_v12_surface_scan_nonmodal_qa",  # v1.2 非模态联动（布局不抖动/实时进度/免确认免硬弹窗/隐藏差异化）
 ]
 
 LEGACY_MODULES = [
@@ -123,6 +132,18 @@ def main() -> int:
             continue
         grand_passed += passed
         grand_failed += failed
+        # 防假绿灯：模块跑出 0 个用例，等于这个模块根本没被执行。
+        # 真实踩过：测试文件末尾漏写
+        #   if __name__ == "__main__": from _runner import run_module_tests
+        # 该模块不产生任何输出，本文件靠正则解析「通过 N / 失败 0」统计用例数，
+        # 于是 N=0 被静默跳过，回归却报「全部通过」。新增测试文件务必确认
+        # 本行不报警，且回归总用例数确实变大了。
+        if passed + failed == 0:
+            print(
+                f"[!! 警告] {name} 报告 0 个用例——该模块很可能没被执行。"
+                "请检查文件末尾是否缺少 __main__ 块（from _runner import run_module_tests）。"
+            )
+            failed_modules.append(name)
         tail = "\n".join(output.strip().splitlines()[-3:])
         print(tail)
         if code != 0:

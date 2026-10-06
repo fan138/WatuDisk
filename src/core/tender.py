@@ -222,6 +222,7 @@ TEMP_HOT: list[str] = [
 ]
 
 BOOT_GREETING: list[str] = [
+    # ---- 早晨（5-12 点）：索引 0-6 ----
     "早上好！新的一天，硬盘已就位，陪你开工。",
     "早安。今天也是被守护着的一天。",
     "晨光正好，硬盘无恙，出发吧。",
@@ -229,11 +230,13 @@ BOOT_GREETING: list[str] = [
     "开机第一课：一切健康，安心开始。",
     "早上好，我把昨天和今天都守护好了。",
     "清晨的第一次问候：硬盘们都在岗。",
+    # ---- 午后/傍晚（12-18 点）：索引 7-10 ----
     "新的一天，从一次安心的体检开始。",
     "午后好。忙碌之余，我在替你看着硬盘。",
     "下午的阳光很好，硬盘的状态也很好。",
     "午后问候：一切如常，请继续。",
     "傍晚好，硬盘陪我守到日落，一切安好。",
+    # ---- 夜晚（18 点后）：索引 11-19 ----
     "夜深了，硬盘还在轻轻呼吸。你也早点休息。",
     "晚安前的守护：一切正常，好梦。",
     "夜色深了，我继续值岗，你放心睡。",
@@ -243,6 +246,13 @@ BOOT_GREETING: list[str] = [
     "系统醒了，我也醒了，硬盘们也是。",
     "每天开机的一句问候：有我在，别担心。",
 ]
+
+# 时段文案下标区间：与 BOOT_GREETING 的注释区块严格对应。
+# v1.2 修复：原先 [7:14] 的上界越界，把「夜深了」「晚安前的守护」两条夜晚文案
+# 划进了午后段，导致下午 2 点体检被说「夜深了…你也早点休息」。
+_BOOT_MORNING_SLICE = slice(0, 7)    # 早晨 5-12 点
+_BOOT_AFTERNOON_SLICE = slice(7, 11)  # 午后/傍晚 12-18 点
+_BOOT_NIGHT_SLICE = slice(11, None)  # 夜晚 18 点后
 
 _TITLES = {
     "ok": "体检报告",
@@ -283,13 +293,18 @@ def pick(category: str) -> tuple[str, str]:
 
 
 def boot_greeting() -> str:
-    """按时段的专属开机问候（早晨/午后/夜晚各取所宜）。"""
+    """按时段的专属开机问候（早晨/午后/夜晚各取所宜）。
+
+    v1.2 修复：原先用 [7:14] 切午后段，越界取到了「夜深了」「晚安前的守护」
+    等夜晚文案，导致下午体检被说「夜深了…你也早点休息」。现改用与文案注释
+    区块严格对应的常量切片。
+    """
     hour = datetime.now().hour
     if 5 <= hour < 12:
-        return random.choice(BOOT_GREETING[:7])
-    if 12 <= hour < 19:
-        return random.choice(BOOT_GREETING[7:14])
-    return random.choice(BOOT_GREETING[14:])
+        return random.choice(BOOT_GREETING[_BOOT_MORNING_SLICE])
+    if 12 <= hour < 18:
+        return random.choice(BOOT_GREETING[_BOOT_AFTERNOON_SLICE])
+    return random.choice(BOOT_GREETING[_BOOT_NIGHT_SLICE])
 
 
 def total_count() -> int:

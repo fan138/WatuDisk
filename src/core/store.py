@@ -22,6 +22,7 @@ import os
 import shutil
 import sys
 import threading
+from datetime import datetime
 
 MAX_HISTORY = 200  # 本地持久化保留最近 200 条（界面只展示最近 30 条 + 滚动条）
 _DATA_VERSION = 1
@@ -62,7 +63,14 @@ class Store:
         self._lock = threading.Lock()
         self._override = dir_override  # 测试注入标记：非 None 时跳过旧数据迁移
         self._path = data_file_path(dir_override)
-        self._data: dict = {"version": _DATA_VERSION, "history": [], "ignored": [], "settings": {}}
+        self._data: dict = {
+            "version": _DATA_VERSION,
+            "history": [],
+            "ignored": [],
+            "settings": {},
+            # v1.2：每块盘最近一次盘面扫描结果，供导出报告展示
+            "surface_scans": {},
+        }
         self._writable = True
         self._load()
 
@@ -80,6 +88,13 @@ class Store:
                 self._data["history"] = list(data.get("history") or [])[-MAX_HISTORY:]
                 self._data["ignored"] = list(data.get("ignored") or [])
                 self._data["settings"] = dict(data.get("settings") or {})
+                # v1.2：老数据文件没有 surface_scans 键，补空dict（缺键会读写出错）
+                scans = data.get("surface_scans")
+                self._data["surface_scans"] = (
+                    {str(k): dict(v) for k, v in scans.items() if isinstance(v, dict)}
+                    if isinstance(scans, dict)
+                    else {}
+                )
         except (OSError, ValueError):
             pass  # 首次运行或文件损坏：从空白开始
 
@@ -186,6 +201,40 @@ class Store:
         """返回气泡提醒日志副本（新在前）。"""
         with self._lock:
             return [dict(item) for item in self._data.get("notify_log") or []]
+
+    # ------------------------------------------------------------------
+    # 盘面扫描结果（v1.2：供导出报告展示「最近一次扫描」）
+    # ------------------------------------------------------------------
+    def save_surface_scan(self, device_id: str, payload: dict) -> None:
+        """保存某块盘最近一次盘面扫描结果（按设备编号覆盖）。
+
+        报告需要展示「最近一次盘面扫描」，所以每次扫完都覆盖同盘的旧记录。
+        只留每块盘一条，不做历史——用户要的是当下状态，不是扫描履历。
+        """
+        key = str(device_id or "?").strip() or "?"
+        with self._lock:
+            scans = dict(self._data.get("surface_scans") or {})
+            record = dict(payload or {})
+            record["scanned_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            scans[key] = record
+            self._data["surface_scans"] = scans
+            self._save_locked()
+
+    def surface_scan(self, device_id: str) -> dict | None:
+        """返回某块盘最近一次盘面扫描结果副本；没有则返回 None。"""
+        key = str(device_id or "?").strip() or "?"
+        with self._lock:
+            record = (self._data.get("surface_scans") or {}).get(key)
+            return dict(record) if isinstance(record, dict) else None
+
+    def all_surface_scans(self) -> dict[str, dict]:
+        """返回全部盘的最近一次盘面扫描结果，键为设备编号。"""
+        with self._lock:
+            return {
+                str(key): dict(value)
+                for key, value in (self._data.get("surface_scans") or {}).items()
+                if isinstance(value, dict)
+            }
 
     # ------------------------------------------------------------------
     # 设置项

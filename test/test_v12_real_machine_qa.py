@@ -5,6 +5,10 @@
 - PD0：通电≈13297h、次数≈1072、写入≈8.6TB、不安全断电 109、备用 100/5、使用率 2%；
 - PD1（ZHITAI）：通电≈1557h、次数≈850、写入≈21.6TB、不安全断电 65、备用 100/10、使用率 4%；
 - 卷映射：C:→[1]、D:→[0,1]，dirty 均 False。
+
+v1.2（2026-10-05）：通电类/写入量类断言改为「保下限、上限开放」——
+这些量只增不减，写死上限会随正常使用必然溢出造成假失败；下限保留以防
+字段错位等真问题。详见下方 PD*_EXPECT 注释。
 """
 from __future__ import annotations
 
@@ -15,21 +19,28 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 
 from core import nvme_health, volume_check  # noqa: E402
 
-# 参考值与容差（漂移只允许单向小幅增长：小时/断电数随时间增大）
+# 参考值与容差（漂移只允许单向增长：小时/次数/断电数/写入量随时间增大）
+#
+# v1.2（2026-10-05）：通电类指标改为「保下限、上限开放」。
+# 原因：这些量只增不减，原先双向封闭区间（如 PD0 [13250, 13400]）会随
+# 机器正常使用必然溢出，导致时间敏感的假失败（实测 PD0 已涨到 13442）。
+# 下限仍有价值——它能挡住「字段解析错位 / 读到别的盘的日志」这类真问题；
+# 上限则放开，让单调增长的量不再每月都要重测。
+# 若某天真出现读数异常回退（< 下限）或数量级错误，届时下限会立刻报警。
 PD0_EXPECT = {
-    "power_on_hours": (13250, 13400),
-    "power_cycles": (1050, 1100),
-    "unsafe_shutdowns": (105, 140),
-    "data_units_written_tb": (8.2, 9.2),
+    "power_on_hours": (13250, None),
+    "power_cycles": (1050, None),
+    "unsafe_shutdowns": (105, None),
+    "data_units_written_tb": (8.2, None),
     "available_spare_pct": 100,
     "spare_threshold": 5,
     "percentage_used": (1, 4),
 }
 PD1_EXPECT = {
-    "power_on_hours": (1550, 1600),
-    "power_cycles": (830, 880),
-    "unsafe_shutdowns": (63, 80),
-    "data_units_written_tb": (21.2, 22.2),
+    "power_on_hours": (1550, None),
+    "power_cycles": (830, None),
+    "unsafe_shutdowns": (63, None),
+    "data_units_written_tb": (21.2, None),
     "available_spare_pct": 100,
     "spare_threshold": 10,
     "percentage_used": (3, 6),
@@ -51,18 +62,23 @@ def _assert_health(health: dict, expect: dict, label: str) -> None:
     assert health["critical_warning"] == 0, f"{label} 不应有危险警告: {health['critical_warning']}"
     temp = health["temperature_c"]
     assert isinstance(temp, int) and 25 <= temp <= 60, f"{label} 温度异常: {temp}"
-    lo, hi = expect["power_on_hours"]
-    assert lo <= health["power_on_hours"] <= hi, (
-        f"{label} 通电 {health['power_on_hours']} 不在 [{lo}, {hi}]")
-    lo, hi = expect["power_cycles"]
-    assert lo <= health["power_cycles"] <= hi, (
-        f"{label} 通电次数 {health['power_cycles']} 不在 [{lo}, {hi}]")
-    lo, hi = expect["unsafe_shutdowns"]
-    assert lo <= health["unsafe_shutdowns"] <= hi, (
-        f"{label} 不安全断电 {health['unsafe_shutdowns']} 不在 [{lo}, {hi}]")
+    for key, name in (
+        ("power_on_hours", "通电"),
+        ("power_cycles", "通电次数"),
+        ("unsafe_shutdowns", "不安全断电"),
+    ):
+        lo, hi = expect[key]
+        value = health[key]
+        # v1.2：hi 为 None 表示上限开放（该量只增不减）；下限始终生效，
+        # 用于挡住字段错位 / 读到其它盘日志等真问题。
+        assert lo <= value, f"{label} {name} {value} 已低于下限 {lo}"
+        if hi is not None:
+            assert value <= hi, f"{label} {name} {value} 不在 [{lo}, {hi}]"
     tb = _du_to_tb(health["data_units_written"])
     lo, hi = expect["data_units_written_tb"]
-    assert lo <= tb <= hi, f"{label} 累计写入 {tb:.2f} TB 不在 [{lo}, {hi}]"
+    assert lo <= tb, f"{label} 累计写入 {tb:.2f} TB 已低于下限 {lo}"
+    if hi is not None:
+        assert tb <= hi, f"{label} 累计写入 {tb:.2f} TB 不在 [{lo}, {hi}]"
     assert health["available_spare_pct"] == expect["available_spare_pct"], (
         f"{label} 备用空间: {health['available_spare_pct']}")
     assert health["spare_threshold"] == expect["spare_threshold"], (

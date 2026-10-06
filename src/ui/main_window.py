@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 from core import autostart, event_scan, metrics, notify_policy, report, verdict
 from core.disk_info import format_hours_pro, format_int, format_size
 from core.nvme_health import format_data_units
+from core.report import APP_VERSION  # 版本号与 report/main.py 同源；直接 import main 会循环依赖
 from core.resource_path import app_icon_path
 from core.store import get_store
 from core.verdict import GRADE_LABELS, grade_of_verdict
@@ -68,6 +69,9 @@ HEALTH_TEXT = {"healthy": "良好", "warning": "警告", "unhealthy": "不健康
 
 # 项目主页（点击底部「GitHub」按钮用系统默认浏览器打开）
 GITHUB_URL = "https://github.com/fan138/WatuDisk"
+# 反馈入口指向 Issues 页而不是仓库首页——用户是来提问题的，首页只会让人自己找入口。
+# （此前「去 GitHub 提建议」按钮错链到首页，属于没真正接住反馈。）
+GITHUB_ISSUES_URL = GITHUB_URL + "/issues"
 
 # 高亮的危险 SMART 属性
 _BAD_ATTR_IDS = (0x05, 0xC5, 0xC6, 0xC7)
@@ -467,6 +471,21 @@ class HistoryPanel(QFrame):
         self._scroll.setVisible(self._expanded)
         self._toggle_btn.setText("▾ 收起" if self._expanded else "▸ 展开")
 
+    def collapse_if_expanded(self) -> bool:
+        """若当前是展开状态就自动收起，返回是否真的做了收起。
+
+        v1.2：磁盘卡片的详情是就地展开的，而体检记录固定在卡片列表下方。
+        记录展开时占掉一屏高度，卡片展开的详情会被它挡住、点开等于白点。
+        所以展开卡片前先把记录收起来，把位置让给用户要看的东西。
+        """
+        if not self._expanded:
+            return False
+        self._expanded = False
+        self._store.set_setting("history_expanded", False)
+        self._scroll.setVisible(False)
+        self._toggle_btn.setText("▸ 展开")
+        return True
+
     # ------------------------------------------------------------------
     def refresh(self) -> None:
         """从存储重新渲染记录列表（新在前，最多显示 30 条，超出滚动查看）。
@@ -769,14 +788,15 @@ class DiskCard(QFrame):
         else:
             add_text("事件日志：过去 30 天未发现与这块盘相关的错误/警告。")
 
-        # 卷损坏位（提权状态下失败只说「无法读取」，不误导为权限问题）
+        # 卷损坏位（v1.2 #13：措辞与判读层对齐——脏位是文件系统标志，非硬件损坏）
         all_volumes = result.get("all_volumes") or []
         dirty_volumes = result.get("dirty_volumes") or []
         if all_volumes:
             if dirty_volumes:
                 letters = "、".join(str(v.get("drive") or "?") for v in dirty_volumes)
                 dirty_label = add_text(
-                    f"卷损坏位：分区 {letters} 已置位「损坏位」，文件系统可能存在损坏。"
+                    f"卷损坏位：分区 {letters} 的文件系统脏位（Dirty Bit）已置位，"
+                    "多为未安全弹出或跨系统使用所致，不代表硬盘硬件损坏（如需清除可运行 chkdsk /f）。"
                 )
                 dirty_label.setObjectName("metricValueL3")
                 _repolish(dirty_label)
@@ -1032,8 +1052,26 @@ class DiskCard(QFrame):
     # ------------------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名约定
         """点击卡片：立即展开 / 收起详情（v1.5.1 按反馈移除动画，秒开）。"""
-        self._detail.setVisible(not self._detail.isVisible())
+        expanding = not self._detail.isVisible()
+        if expanding:
+            self._collapse_history_below()
+        self._detail.setVisible(expanding)
         super().mousePressEvent(event)
+
+    def _collapse_history_below(self) -> None:
+        """展开本卡片前，先把体检记录收起（若它是展开的）。
+
+        v1.2：体检记录固定在卡片列表下方并占掉一屏高度，展开中的卡片详情
+        会被它整块遮住——用户点开卡片却什么也看不到，像是没反应。
+        沿 parent 链找主窗口的体检记录面板，找不到就静默跳过（不因此报错）。
+        """
+        node = self.parent()
+        while node is not None:
+            panel = getattr(node, "_history_panel", None)
+            if isinstance(panel, HistoryPanel):
+                panel.collapse_if_expanded()
+                return
+            node = node.parent()
 
 
 class MainWindow(QMainWindow):
@@ -1112,17 +1150,64 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # UI 构建
     # ------------------------------------------------------------------
-    def _show_v12_teaser(self) -> None:
-        """v1.2 预热弹窗：预告开发中的功能，征集用户建议。"""
-        QMessageBox.information(
-            self,
-            "新版预告 · v1.2 开发中",
-            "下一个版本正在开发中，计划加入：\n\n"
-            "· 表面扫描——逐扇区检测坏道，抓住 SMART 还没记上的故障\n"
-            "· 邮件 / 微信提醒——健康值达到阈值时自动推送（开发中）\n"
-            "· USB 移动硬盘识别增强\n\n"
-            "你最想要哪个功能？欢迎到 GitHub 仓库提 Issue 留言，你的建议很宝贵。",
+    def _show_help_center(self) -> None:
+        """右下角「?」使用说明：健康分口径 + 本版已更新内容 + 下一版计划。
+
+        v1.2 起因（三点都来自用户/坛友反馈）：
+        1. 软件本体已是 v1.2，原弹窗却还在预告「本版开发中」——自相矛盾，必须改口；
+        2. 原先底部单独挂了个「评分说明」按钮，底部太挤，合并进这里；
+        3. 坛友反馈「分数和 HardDiskSentinel 对不上，到底谁准」——
+           答案要让人随时能就地看到，而不是藏在文档里。
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle(f"使用说明 · {APP_VERSION}")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
+            "<b>一、健康分是怎么算的？为什么和其他工具不一样？</b><br>"
+            "本软件与其他工具（HardDiskSentinel、CrystalDiskInfo 等）的"
+            "<b>硬件读数是一致的</b>——温度、通电时间、坏块、寿命等底层数据相同，"
+            "不会出现「同一个指标你读 40℃、别人读 60℃」的情况。<br>"
+            "差别出在「健康分」这一步：<b>分数是各家自己定的算法</b>。"
+            "同样一块盘，有的把「温度偏高」扣得重、有的扣得轻；"
+            "有的对少量坏块立刻降级、有的要累积到一定量才提示。"
+            "所以<b>分数高低不完全一致是正常的</b>，"
+            "它只反映「按本软件的保守程度」的健康状况，"
+            "不代表硬件的真实寿命百分比，也不代表谁更准。<br><br>"
+            "<b>判断硬盘是否真的要换，请只看硬件硬指标：</b><br>"
+            "· 重映射扇区 / 待映射扇区 / 无法修正扇区是否持续增长<br>"
+            "· SMART 是否报 Unhealthy<br>"
+            "· 厂商自带检测工具（官方软件）的结论<br>"
+            "这些是客观事实，不受各家评分算法影响。<br><br>"
+            f"<b>二、{APP_VERSION} 已经更新了什么？</b><br>"
+            "· <b>新增盘面扫描</b>——逐块只读读取盘面，画出 20×20 盘面地图，"
+            "找出读不出来或读得特别慢的地方（坏道），"
+            "补上「SMART 全绿但盘实际不稳」这个盲区。<br>"
+            "· <b>修复找不到硬盘</b>——某些精简版系统上会自动换用另一条检测通道。<br>"
+            "· <b>不再误报「0% 寿命」</b>——早期硬盘没有寿命数据时不再当成危险。<br>"
+            "· <b>CRC 提示不再自相矛盾</b>、<b>脏位提示不再吓人</b>、"
+            "<b>问候语不再串时段</b>。<br><br>"
+            "<b>三、下一版（v1.3）计划</b><br>"
+            "· <b>邮件 / 微信提醒</b>——健康分掉到阈值时自动推送通知，"
+            "不用惦记着手动体检<br>"
+            "· <b>USB 移动固态硬盘识别增强</b>——改善 USB 硬盘盒下的健康数据读取<br>"
+            "· <b>Intel VMD / 服务器 RAID 支持</b>——让被控制器挡住的盘也能被识别<br>"
+            "· <b>SAS 企业盘支持</b>、<b>NVMe 主控型号与固件信息</b><br>"
+            "以上都在开发中，你最想要哪个？欢迎到 GitHub 仓库提 Issue 留言。<br><br>"
+            "<span style='color:#888'>本软件全程只读检测，不写入硬盘任何数据。"
+            "健康分说明也会出现在导出的 HTML 报告页脚里。</span>"
         )
+        ok_btn = box.addButton("明白了", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(ok_btn)
+        report_btn = box.addButton("查看详细报告…", QMessageBox.ButtonRole.ActionRole)
+        github_btn = box.addButton("去 GitHub 提建议", QMessageBox.ButtonRole.ActionRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is report_btn and self._results:
+            self._export_report()
+        elif clicked is github_btn:
+            # 提建议要直达 Issues 页，不是仓库首页（用户是来提问题的）
+            QDesktopServices.openUrl(QUrl(GITHUB_ISSUES_URL))
 
     def _build_ui(self, version: str) -> None:
         central = QWidget()
@@ -1192,6 +1277,18 @@ class MainWindow(QMainWindow):
         self._btn_detect.setObjectName("primary")
         self._btn_detect.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_detect.clicked.connect(self._start_detection)
+        # v1.2（#3 / #4）：盘面扫描入口——补「SMART 全绿但盘实际不稳」这个盲区。
+        # 排在「导出报告」之前：两者都是「检测出问题后的下一步动作」，挨在一起更顺；
+        # 单独按钮而非塞进「开始全盘检测」，因为耗时不可控（机械盘全盘扫可达数小时），
+        # 混进日常体检会让人以为程序卡死。
+        # 名字用「盘面」不用「表面」：扫的是磁盘盘面的可读性与响应速度，
+        # 「表面扫描」听着像扫外壳或扫文件系统，容易被误解。
+        self._virscan_btn = QPushButton("盘面扫描")
+        self._virscan_btn.setObjectName("secondary")
+        self._virscan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._virscan_btn.setToolTip("逐块只读读取盘面，检查有没有读不出来或读得特别慢的地方（坏道）")
+        self._virscan_btn.setEnabled(False)
+        self._virscan_btn.clicked.connect(self._open_surface_scan)
         self._btn_export = QPushButton("导出报告")
         self._btn_export.setObjectName("secondary")
         self._btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1209,7 +1306,9 @@ class MainWindow(QMainWindow):
         self._silent_check.toggled.connect(self._on_silent_toggled)
         note = QLabel("只读检测 · 不写入任何数据")
         note.setObjectName("note")
+        # 按钮顺序 = 界面上从左到右的顺序：开始全盘检测 → 盘面扫描 → 导出报告 → …
         btn_row.addWidget(self._btn_detect)
+        btn_row.addWidget(self._virscan_btn)
         btn_row.addWidget(self._btn_export)
         btn_row.addWidget(self._autostart_check)
         btn_row.addWidget(self._silent_check)
@@ -1224,13 +1323,15 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         note.setToolTip("气泡提醒与提醒方案：请右键任务栏托盘图标 → 「提醒设置」")
         btn_row.addWidget(note, 0, Qt.AlignmentFlag.AlignBottom)
-        # ---- v1.2 预热角标（v1.1.1）：移到底部「只读检测」文字后，顶部不留空位 ----
+        # ---- 使用说明角标：评分口径 + 当前版本已更新内容 + 下一版计划 ----
+        # v1.2 起因：软件本体已是 v1.2，若角标还在预告「本版开发中」就是自相矛盾；
+        # 同时把原先独立的「评分说明」按钮内容并入此处，底部按钮更干净。
         hint = QPushButton("?")
         hint.setObjectName("v12Hint")
         hint.setCursor(Qt.CursorShape.PointingHandCursor)
         hint.setFixedSize(22, 22)
-        hint.setToolTip("新版预告 · 点我看看")
-        hint.clicked.connect(self._show_v12_teaser)
+        hint.setToolTip("使用说明 · 健康分怎么算 · 下一版计划")
+        hint.clicked.connect(self._show_help_center)
         btn_row.addWidget(hint, 0, Qt.AlignmentFlag.AlignBottom)
         bottom.addLayout(btn_row)
 
@@ -1364,6 +1465,8 @@ class MainWindow(QMainWindow):
         self._btn_detect.setEnabled(False)
         self._btn_detect.setText("检测中…")
         self._btn_export.setEnabled(False)
+        # v1.2：检测期间禁用盘面扫描（要用最新的盘列表，且避免两件事抢磁盘带宽）
+        self._virscan_btn.setEnabled(False)
         self._detect_round += 1
         self._clear_cards()
         self._ov_total.setText("—")
@@ -1455,6 +1558,8 @@ class MainWindow(QMainWindow):
         self._btn_detect.setEnabled(True)
         self._btn_detect.setText("重新检测")
         self._btn_export.setEnabled(bool(results))
+        # v1.2：检测完成才允许开盘面扫描（要拿 device_id 与 size）
+        self._virscan_btn.setEnabled(bool(results))
 
         self._record_history(results, True, elapsed)
 
@@ -1561,12 +1666,101 @@ class MainWindow(QMainWindow):
             lines.append(" · ".join(bits))
         return lines
 
+    def _open_surface_scan(self) -> None:
+        """v1.2（#3 / #4）：打开盘面扫描对话框。
+
+        需要设备编号与容量才能规划读取块，所以只在检测完成、有结果时可用。
+        """
+        disks = []
+        for result in self._results:
+            disk = dict(result.get("disk") or {})
+            if str(disk.get("device_id") or "").isdigit():
+                disks.append(disk)
+        if not disks:
+            QMessageBox.information(
+                self,
+                "暂时无法扫描",
+                "还没有检测到可扫描的硬盘。\n请先点「开始全盘检测」，或以管理员身份运行后再试。",
+            )
+            return
+        if not self._admin:
+            answer = QMessageBox.question(
+                self,
+                "建议以管理员身份运行",
+                "盘面扫描需要直接读取物理盘，当前软件不是以管理员身份运行，\n"
+                "扫描可能失败或读不到数据。\n\n要现在继续吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        from ui.surface_scan_dialog import SurfaceScanDialog
+
+        # v1.2：若已有盘面扫描对话框（扫描中被「隐藏」收到后台 / 扫完待查看），
+        # 直接把它重新唤出来，不要开第二个——否则后台那个还在扫、新开这个又扫，
+        # 两个抢同一块盘还互相看不见。
+        existing = getattr(self, "_surface_scan_dlg", None)
+        if isinstance(existing, SurfaceScanDialog) and existing.isVisible() is False:
+            existing.showNormal()
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        # v1.2：用 show() 非模态而非 exec() 模态——这是本轮五条反馈的根因：
+        # exec() 会阻塞主窗口，导致「隐藏后台扫」时主窗口按钮无法实时显示进度、
+        # 隐藏后再点开变成全新界面。非模态才能让主窗口与扫描页联动。
+        dialog = SurfaceScanDialog(disks, parent=self, tray=self._tray)
+        self._surface_scan_dlg = dialog
+        dialog.scan_progress.connect(self._on_surface_progress)
+        dialog.scan_state_changed.connect(self._on_surface_state)
+        dialog.finished.connect(self._on_surface_dialog_closed)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_surface_progress(self, percent: object) -> None:
+        """后台扫描实时进度：把「扫描中 12.33%」写到主界面按钮上（丝滑更新）。"""
+        try:
+            value = float(percent or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        self._virscan_btn.setText(f"扫描中 {value:.2f}%")
+        self._virscan_btn.setToolTip("盘面扫描正在后台进行，点击可查看扫描页面")
+
+    def _on_surface_state(self, state: str) -> None:
+        """盘面扫描整体状态 → 主界面「盘面扫描」按钮文案。
+
+        - scanning：显示「扫描中 X%」（由 _on_surface_progress 持续刷新）
+        - finished：显示「扫描完成」，点击可查看结果页
+        - paused：手动连扫停顿，显示「扫描完成（待继续）」
+        - idle / hidden / shown：复位成「盘面扫描」
+        """
+        if state == "finished":
+            self._virscan_btn.setText("扫描完成")
+            self._virscan_btn.setToolTip("盘面扫描已完成，点击查看扫描结果")
+        elif state == "paused":
+            self._virscan_btn.setText("扫描完成(待继续)")
+            self._virscan_btn.setToolTip("已完成一块勾选的硬盘，点击继续处理下一块")
+        elif state in ("idle", "hidden", "shown"):
+            self._virscan_btn.setText("盘面扫描")
+            self._virscan_btn.setToolTip(
+                "逐块只读读取盘面，检查有没有读不出来或读得特别慢的地方（坏道）"
+            )
+        self._virscan_btn.setEnabled(True)
+
+    def _on_surface_dialog_closed(self, _result: object = None) -> None:
+        """盘面扫描对话框真正关闭后：清引用 + 按钮复位。"""
+        self._surface_scan_dlg = None
+        self._on_surface_state("idle")
+
     def _on_detect_failed(self, message: str) -> None:
         """检测失败提示（界面降级，不崩溃）。"""
         self._progress.hide()
         self._stage_label.setText("检测失败")
         self._btn_detect.setEnabled(True)
         self._btn_detect.setText("重新检测")
+        # v1.2：失败时也要把盘面扫描按钮恢复（可能仍有上次的盘列表可用）
+        self._virscan_btn.setEnabled(bool(self._results))
         for card in self._cards_by_device.values():
             card.apply_failed()
         self._record_history(self._results, False, time.perf_counter() - self._detect_started_at)

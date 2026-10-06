@@ -224,10 +224,12 @@ def test_qa_none_nvme_temperature_boundaries():
     assert v70["score"] == 85, v70
 
 
-def test_qa_none_nvme_dirty_volume_deduct_40():
+def test_qa_none_nvme_dirty_volume_light_penalty():
+    """v1.2（#13）：NVMe 盘仅脏位、无硬件信号 -> 轻扣 12 分（88/healthy），不再是重扣 40 分。"""
     v = _eval(dirty=[{"drive": "C:", "dirty": True, "disk_number": 0}])
-    assert v["score"] == 60 and v["level"] == "warning", v
-    assert any("损坏位" in r for r in v["reasons"]), v["reasons"]
+    assert v["score"] == 88 and v["level"] == "healthy", v
+    assert any("脏位" in r for r in v["reasons"]), v["reasons"]
+    assert not any("可能存在损坏" in r for r in v["reasons"]), "不应再用「可能存在损坏」强暗示硬件故障"
 
 
 def test_qa_none_nvme_event_count_deduct():

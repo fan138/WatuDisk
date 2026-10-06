@@ -95,10 +95,27 @@ def test_reallocated_05_capped_25():
 
 
 def test_crc_c7_small():
+    """v1.2（#16）：C7=50 属微量累计（<100 告警阈值）——不扣分、不劝换线，仅安抚告知。"""
     result = verdict.evaluate_disk(BASE_DISK, GOOD_COUNTERS, [_mk_attr(0xC7, 50)], 0, [], [])
-    assert result["score"] == 97, f"C7=50 扣 3 分，score={result['score']}"
+    assert result["score"] == 100, f"C7=50 微量不扣分，score={result['score']}"
     assert result["level"] == "healthy"
-    assert any("数据线" in r or "CRC" in r or "接口" in r for r in result["reasons"])
+    assert any("CRC" in r and "无需处理" in r for r in result["reasons"]), f"应给安抚说明: {result['reasons']}"
+    assert not any("更换 SATA 线" in r for r in result["reasons"]), "微量 CRC 不应弹换线建议"
+
+
+def test_crc_c7_2_no_score_loss():
+    """坛友场景：TOSHIBA 报 2 次 CRC，指标判正常却曾被扣分并劝换线——v1.2 起不扣分。"""
+    result = verdict.evaluate_disk(BASE_DISK, GOOD_COUNTERS, [_mk_attr(0xC7, 2)], 0, [], [])
+    assert result["score"] == 100, f"C7=2 不扣分，score={result['score']}"
+    assert not any("更换 SATA 线" in r for r in result["reasons"]), f"C7=2 不该劝换线: {result['reasons']}"
+    assert any("无需处理" in r for r in result["reasons"]), "应说明属正常范围偶发"
+
+
+def test_crc_c7_over_threshold_still_warns():
+    """v1.2（#16）：C7 >= 100 告警阈值才扣分并提示换线。"""
+    result = verdict.evaluate_disk(BASE_DISK, GOOD_COUNTERS, [_mk_attr(0xC7, 500)], 0, [], [])
+    assert result["score"] == 92, f"C7=500 扣 min(10,3+5)=8 分，score={result['score']}"
+    assert any("更换 SATA 线" in r for r in result["reasons"]), "超阈值应提示换线"
 
 
 def test_crc_c7_capped_10():
@@ -111,6 +128,48 @@ def test_ssd_wear_below_10_percent():
     assert result["score"] == 60, f"Wear=95 扣 40 分，score={result['score']}"
     assert result["level"] == "warning"
     assert any("寿命" in r for r in result["reasons"])
+
+
+# ---- v1.2（#18）早期 SSD 无寿命数据的 0% 误报（金士顿 SV300S37A240G 场景） ----
+
+def test_ssd_wear_100_hardware_clean_not_judged_worn_out():
+    """坛友场景：早期 SATA SSD 无寿命数据，Windows 把 Wear 填成默认 100。
+
+    此时重映射/待映射/无法修正扇区全为 0，不应判「寿命耗尽」并扣 40 分，
+    更不应把用户吓到去扔一块好盘。
+    """
+    result = verdict.evaluate_disk(SSD_DISK, dict(GOOD_COUNTERS, Wear=100), [], 0, [], [])
+    assert result["score"] == 100, f"无寿命数据不应扣分，score={result['score']}"
+    assert result["level"] == "healthy"
+    joined = "".join(result["reasons"])
+    assert "未提供寿命数据" in joined, f"应说明未提供寿命数据: {joined}"
+    assert "立即备份并准备更换" not in joined, "不应劝用户更换硬盘"
+
+
+def test_ssd_wear_100_with_bad_sectors_still_warns():
+    """反向保护：若同时存在坏块等硬件异常，Wear=100 仍应按真实耗尽重扣。"""
+    result = verdict.evaluate_disk(
+        SSD_DISK, dict(GOOD_COUNTERS, Wear=100), [_mk_attr(0xC5, 20)], 0, [], []
+    )
+    # C5=20 扣 min(35, 20+2)=22，Wear=100 重扣 40 -> 38，force_warning 钳制
+    assert any("寿命" in r for r in result["reasons"]), f"有硬件信号时仍应提示寿命: {result['reasons']}"
+    assert result["level"] in ("warning", "danger"), f"应至少警告档，level={result['level']}"
+
+
+def test_ssd_wear_95_is_real_measurement_not_suppressed():
+    """边界：Wear=95 是真实测量值（≠系统默认 100），不该被「无数据」规则误伤。"""
+    result = verdict.evaluate_disk(SSD_DISK, dict(GOOD_COUNTERS, Wear=95), [], 0, [], [])
+    assert result["score"] == 60, f"Wear=95 属真实测量应照常扣分，score={result['score']}"
+    assert "未提供寿命数据" not in "".join(result["reasons"]), "Wear=95 不应被当作无数据"
+
+
+def test_ssd_wear_100_nvme_media_errors_warns():
+    """NVMe 盘：Wear=100 但有媒体错误时不应被抑制。"""
+    result = verdict.evaluate_disk(
+        SSD_DISK, dict(GOOD_COUNTERS, Wear=100), [], 0, [], [],
+        {"media_errors": 5, "percentage_used": 100},
+    )
+    assert "未提供寿命数据" not in "".join(result["reasons"]), "有媒体错误时不应抑制"
 
 
 def test_ssd_wear_10_to_20_percent():
@@ -198,10 +257,49 @@ def test_events_100_deduct_40_capped():
     assert result["score"] == 60, f"事件扣分封顶 40，score={result['score']}"
 
 
-def test_dirty_volume_deduct_40():
+def test_dirty_volume_light_penalty_no_hardware_signal():
+    """v1.2（#13）：仅有脏位、其它指标正常 -> 轻扣（12 分），不再重扣 40。"""
     result = verdict.evaluate_disk(BASE_DISK, GOOD_COUNTERS, [], 0, [], [{"drive": "C:", "dirty": True, "disk_number": 0}])
-    assert result["score"] == 60, f"损坏位扣 40 分，score={result['score']}"
-    assert any("C:" in r and "损坏位" in r for r in result["reasons"])
+    assert result["score"] == 88, f"仅脏位应轻扣 12 分，score={result['score']}"
+    assert result["level"] == "healthy"
+    assert any("C:" in r and "脏位" in r for r in result["reasons"])
+    joined = "".join(result["reasons"])
+    assert "可能存在损坏" not in joined, "不应再用「可能存在损坏」强暗示硬件故障"
+    assert "chkdsk" in joined, "应给出可执行的修复指引 chkdsk /f"
+
+
+def test_dirty_exfat_emphasises_not_hardware_failure():
+    """坛友场景：exFAT + PS5 的新盘报脏位但寿命 100%——应安抚「不代表硬件损坏」。"""
+    result = verdict.evaluate_disk(
+        SSD_DISK, dict(GOOD_COUNTERS, Wear=0), [], 0, [],
+        [{"drive": "E:", "dirty": True, "disk_number": 0, "fstype": "exFAT"}],
+    )
+    joined = "".join(result["reasons"])
+    assert "不代表硬盘硬件损坏" in joined or "与硬盘硬件健康无关" in joined, f"exFAT 脏位需安抚: {joined}"
+    assert "PS5" in joined or "未安全弹出" in joined or "其他设备" in joined, f"应说明常见成因: {joined}"
+
+
+def test_dirty_with_hardware_signal_keeps_heavy_penalty():
+    """v1.2（#13）：脏位与硬件异常信号并存 -> 维持重扣 40 分（叠加问题更严重）。"""
+    result = verdict.evaluate_disk(
+        BASE_DISK, GOOD_COUNTERS, [_mk_attr(0xC5, 100)], 0, [],
+        [{"drive": "C:", "dirty": True, "disk_number": 0}],
+    )
+    # C5=100 扣 min(35, 20+100//8)=32，脏位重扣 40 -> 100-32-40=28
+    assert result["score"] == 28, f"硬件信号并存时脏位应重扣，score={result['score']}"
+    assert result["level"] == "danger"
+
+
+def test_dirty_volume_heavy_penalty_with_c6():
+    """脏位 + C6 无法修正扇区并存：维持重扣，且文案应偏「尽快处理」。"""
+    result = verdict.evaluate_disk(
+        BASE_DISK, GOOD_COUNTERS, [_mk_attr(0xC6, 10)], 0, [],
+        [{"drive": "C:", "dirty": True, "disk_number": 0}],
+    )
+    # C6 扣 45 + 脏位重扣 40 -> 15；未触发 force 钳制
+    assert result["score"] == 15, f"C6 并存时脏位应重扣，score={result['score']}"
+    joined = "".join(result["reasons"])
+    assert "硬件异常" in joined, f"并存时应说明硬件也有异常: {joined}"
 
 
 def test_health_status_unhealthy_forced_danger():

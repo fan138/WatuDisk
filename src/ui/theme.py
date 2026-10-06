@@ -86,6 +86,13 @@ QLabel#pillGrade0 { background: #8A1E1E; color: #FFFFFF; border-radius: 10px;
 QLabel#pillGrade-1 { background: #EEF0F3; color: #6B7280; border-radius: 10px;
                      padding: 4px 12px; font-size: 12px; font-weight: 600; }
 
+/* ---- 盘面地图（v1.2：20×20 格子热力图容器） ---- */
+QFrame#gridCard { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px; }
+
+/* ---- 盘面扫描结果页（v1.2：替代硬弹窗，左侧色条按结论等级着色） ---- */
+QFrame#resultCard { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; }
+QLabel#resultTitle { font-size: 14px; font-weight: 600; color: #0F172A; }
+
 /* ---- 360 式体检步骤清单 ---- */
 QFrame#stepsCard { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px; }
 QLabel#stepRow { font-size: 12px; color: #9CA3AF; padding: 2px 4px; }

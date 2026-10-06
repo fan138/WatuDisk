@@ -199,11 +199,35 @@ def metric_items_for_result(result: dict) -> list[dict]:
         add("start_stop", "主轴启停次数", format_int(start_stop))
 
     # 剩余寿命 / 使用率（互为镜像，避免同一事实重复警示；无磨损数据时整行隐藏）
+    #
+    # v1.2（#18）：部分早期 SATA SSD（如金士顿 SV300S37A240G）硬件不提供寿命数据，
+    # Windows 会把 Get-StorageReliabilityCounter 的 Wear 填成默认 100。若直接显示
+    # 「剩余寿命 0% 危险」，等于用系统默认值误判一块好盘报废——坛友反馈的正是此问题。
+    # 交叉校验：真要报废的盘必然伴随坏块增长，故当重映射(0x05)/待映射(0xC5)/
+    # 无法修正(0xC6)/NVMe 媒体错误全为 0 时，判为「未提供寿命数据」而非「寿命耗尽」。
+    def _hardware_clean() -> bool:
+        media_errors = nvme.get("media_errors")
+        try:
+            media_errors_int = int(media_errors) if media_errors is not None else 0
+        except (TypeError, ValueError):
+            media_errors_int = 0
+        return (
+            (smart_raw.get(0x05) or 0) == 0
+            and (smart_raw.get(0xC5) or 0) == 0
+            and (smart_raw.get(0xC6) or 0) == 0
+            and media_errors_int == 0
+        )
+
     wear = counters.get("Wear") if counters else None
     nvme_pct = nvme.get("percentage_used")
     if isinstance(wear, int) and 0 <= wear <= 100:
         life = max(0, 100 - wear)
-        add("life_remaining", "剩余寿命（SSD）", f"{life}%", level_for("life_remaining", life))
+        # 仅抑制 wear==100（Windows 无数据时的默认值）这一种误报情形；
+        # Wear=95 等非默认值视为真实测量，仍按剩余寿命正常显示与着色。
+        if life == 0 and wear == 100 and _hardware_clean():
+            add("life_remaining", "剩余寿命（SSD）", "未提供（早期硬盘）")
+        else:
+            add("life_remaining", "剩余寿命（SSD）", f"{life}%", level_for("life_remaining", life))
     elif isinstance(nvme_pct, int) and 0 <= nvme_pct <= 100:
         life = max(0, 100 - nvme_pct)
         add("life_remaining", "剩余寿命（SSD）", f"{life}%", level_for("life_remaining", life))

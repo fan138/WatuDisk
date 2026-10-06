@@ -19,8 +19,20 @@ deploy/
 # ---- 本地一次性脚本与日志（不入库） ----
 build/*.log
 build/exe_selftest.*
+src/build/_build_*.log
 test/gh_device_login.py
 test/_reg_*.log
+test/_push_release_*.log
+test/_push_release_v11*.py
+test/_offscreen_*_check.py
+test/_grid_preview.png
+icon_01.png
+
+# ---- docs/ 里的宣发素材含站长邮箱、论坛注册清单等私密内容，不随仓库公开 ----
+# 只保留 docs/screenshots/ 下的界面截图（README 展示用）
+docs/*
+!docs/screenshots/
+!docs/screenshots/*.png
 
 # ---- 设计稿与本地备份（正式图标源单独入库，候选稿不入库） ----
 design/*
