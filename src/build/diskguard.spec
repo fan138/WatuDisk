@@ -42,7 +42,7 @@ a = Analysis(
         'xmlrpc',
         'pyexpat',
         # v1.5 瘦身：本软件用不到的 Qt 模块（界面只用 Widgets/Gui/Core/Network）
-        'PySide6.QtSvg',
+        # v1.2.1：QtSvg 已启用（体检记录垃圾桶线性图标用 QSvgRenderer 渲染），不能排除
         'PySide6.QtSvgWidgets',
         'PySide6.QtPdf',
         'PySide6.QtPdfWidgets',
@@ -81,9 +81,9 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # 本软件是纯 Widgets/光栅渲染，不使用 OpenGL/D3D；
 # Quick/Qml/Designer/Pdf/Charts 相关即使被依赖链带入也一并剔除。
 _EXCLUDE_BINARY_PATTERNS = (
-    'opengl32sw', 'd3dcompiler', 'Qt6Svg', 'Qt6Qml', 'Qt6Quick', 'Qt6Designer',
+    'opengl32sw', 'd3dcompiler', 'Qt6Qml', 'Qt6Quick', 'Qt6Designer',
     'Qt6Pdf', 'Qt6Charts', 'Qt63D', 'Qt6Test', 'qtpyvcp',
-)
+)  # v1.2.1：Qt6Svg.dll 已启用（垃圾桶 SVG 图标），从排除清单移除
 a.binaries = [
     entry for entry in a.binaries
     if not any(pattern.lower() in entry[0].lower() for pattern in _EXCLUDE_BINARY_PATTERNS)

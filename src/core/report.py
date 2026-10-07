@@ -14,7 +14,7 @@ from core.nvme_health import format_data_units
 from core.verdict import GRADE_COLORS, GRADE_LABELS, grade_of_verdict
 
 APP_NAME = "挖兔硬盘精灵"
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.2.1"
 
 _STYLE = """
 body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;

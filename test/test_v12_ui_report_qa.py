@@ -132,7 +132,7 @@ def test_qa_export_report_nvme_table_and_wording():
         assert "需要管理员权限" not in html, "提权环境下报告不应出现「需要管理员权限」"
         # 卷损坏位应显示「未置位」而非「无法读取」
         assert "未置位" in html, "报告应包含卷损坏位未置位说明"
-        assert "v1.2.0" in html, "报告应带 v1.2.0 版本号"
+        assert report.APP_VERSION in html, f"报告应带版本号 {report.APP_VERSION}"
     finally:
         if os.path.isfile(path):
             os.remove(path)
@@ -140,6 +140,31 @@ def test_qa_export_report_nvme_table_and_wording():
             os.rmdir(tmpdir)
         except OSError:
             pass
+
+
+def test_qa_svg_icon_dependency_is_packaged():
+    """QtSvg 依赖三重守卫——exe 启动 ImportError 的教训（2026-10-07 真机踩坑）：
+
+    垃圾桶图标用 QSvgRenderer 渲染，但 v1.5 瘦身清单把 PySide6.QtSvg 与
+    Qt6Svg.dll 都排除了，导致打包 exe 启动即 ModuleNotFoundError。
+    守的是价值：只要 main_window 用到 QtSvg，打包配置就绝不能再排除它。
+    """
+    src_dir = os.path.normpath(os.path.join(TEST_DIR, "..", "src"))
+    with open(os.path.join(src_dir, "ui", "main_window.py"), encoding="utf-8") as h:
+        mw_source = h.read()
+    if "QSvgRenderer" not in mw_source:
+        return  # 图标实现改掉后本守卫自动失效，不误伤
+    # ① 本机可导入（源码环境）
+    from PySide6.QtSvg import QSvgRenderer  # noqa: F401
+    # ② spec 的 excludes 不得含 PySide6.QtSvg
+    spec_path = os.path.join(src_dir, "build", "diskguard.spec")
+    with open(spec_path, encoding="utf-8") as h:
+        spec_source = h.read()
+    assert "'PySide6.QtSvg'" not in spec_source, \
+        "diskguard.spec excludes 不得再排除 PySide6.QtSvg（垃圾桶图标需要）"
+    # ③ 二进制剔除清单不得含 Qt6Svg.dll
+    assert "'Qt6Svg'" not in spec_source, \
+        "diskguard.spec _EXCLUDE_BINARY_PATTERNS 不得再剔除 Qt6Svg.dll（垃圾桶图标需要）"
 
 
 if __name__ == "__main__":

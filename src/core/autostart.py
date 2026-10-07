@@ -81,7 +81,14 @@ def _target() -> tuple[str, str, str]:
 
 
 def _icon_location() -> str:
-    """快捷方式图标：优先打包内的 ico，回退到目标程序自身图标。"""
+    """快捷方式图标：打包态用 exe 自身图标；开发态优先 diskguard.ico。
+
+    注意：打包态 resource_path 指向 _MEIPASS 临时解压目录，而 .lnk 是持久化文件，
+    关机后 _MEIPASS 被回收，图标引用会失效变空白——所以打包态必须直接引用 exe 自身。
+    """
+    if getattr(sys, "frozen", False):
+        target, _args, _workdir = _target()
+        return target
     try:
         from core.resource_path import resource_path
 
@@ -165,3 +172,29 @@ def disable(startup_dir: str | None = None) -> bool:
         return True
     except OSError:
         return False
+
+
+def apply_preference(enabled: bool, startup_dir: str | None = None) -> bool:
+    """按用户持久化偏好开关开机启动，返回最终是否启用（以文件系统为准）。
+
+    v1.2.1 修复：替代「每次启动无条件 enable」的旧逻辑——旧逻辑导致用户
+    取消勾选后，下次启动又因 .lnk 缺失被强制重建，复选框重新勾上。
+    现在严格按 enabled 决定：
+    - True：确保 .lnk 存在（含 --boot 静默参数迁移 + 旧品牌名快捷方式迁移）；
+    - False：确保 .lnk 不存在（用户明确关闭后，启动不再偷偷改回）。
+    所有步骤失败容错，最终状态以 is_enabled() 的真实返回值上报。
+    """
+    if enabled:
+        if not is_enabled(startup_dir):
+            enable(startup_dir)
+            # 首次运行 / 某些环境下 WScript.Shell COM 偶发失败（返回 False 但文件没建出来），
+            # 重试一次再判定，确保「勾选了就真有 .lnk」——这是首次打开任务管理器看不到入口的根因之一。
+            if not is_enabled(startup_dir):
+                enable(startup_dir)
+        else:
+            ensure_boot_argument(startup_dir)
+        migrate_legacy_lnk(startup_dir)
+    else:
+        if is_enabled(startup_dir):
+            disable(startup_dir)
+    return is_enabled(startup_dir)

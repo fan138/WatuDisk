@@ -13,22 +13,28 @@ v1.1：关闭主窗口最小化到托盘、开机启动（绿色方式）、专�
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime
 
 from PySide6.QtCore import (
     QAbstractAnimation,
+    QByteArray,
     QEasingCurve,
+    QObject,
     QPropertyAnimation,
     Qt,
     QThread,
     QTimer,
     QUrl,
+    QSize,
     Signal,
 )
-from PySide6.QtGui import QColor, QDesktopServices, QIcon
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -408,6 +414,32 @@ class DetectStepsWidget(QWidget):
         QTimer.singleShot(self._COLLAPSE_DELAY_MS, lambda: _fade_out_then_hide(self._card))
 
 
+class _AutostartToggleWorker(QThread):
+    """后台执行开机启动快捷方式的增删，避免 PowerShell COM 调用（约 1 秒）阻塞 UI。
+
+    v1.2.1 优化：早年 _on_autostart_toggled 同步调用 autostart.enable()/disable()
+    会卡住主线程约 1 秒；改为后台线程执行，勾选立即响应，完成后才回写真实状态。
+    """
+
+    done = Signal(bool, bool)  # (ok, actual_enabled)
+
+    def __init__(self, enable_flag: bool, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._enable_flag = enable_flag
+
+    def run(self) -> None:
+        try:
+            if self._enable_flag:
+                ok = autostart.enable()
+            else:
+                ok = autostart.disable()
+            actual = autostart.is_enabled()
+            self.done.emit(ok, actual)
+        except Exception:
+            # 兜底：任何异常都如实回报实际状态，绝不静默卡死
+            self.done.emit(False, autostart.is_enabled())
+
+
 class HistoryPanel(QFrame):
     """体检记录面板（v1.3）：留下健康痕迹，支持折叠 / 展开。
 
@@ -416,6 +448,11 @@ class HistoryPanel(QFrame):
     - 记录持久化在本地 data 文件（封顶 200 条自动淘汰最旧），
       界面一次展示最近 30 条、超出部分滚动查看（v1.1.1：用户定稿）；
     - 默认折叠不占地方，折叠状态会被记住。
+
+    v1.2.1 美化：移除「清空」文字按钮与每行「✕」的臃肿布局，改为
+    展开后底部一个灰色垃圾桶图标（无边框）→ 点击进入多选模式（每行出现
+    复选框）→ 勾选后出现「✕ 删除」图标（位于「全选」前面），支持多选
+    批量删除；再次点击垃圾桶退出多选。
     """
 
     MAX_DISPLAY_ROWS = 30
@@ -426,6 +463,8 @@ class HistoryPanel(QFrame):
         self.setObjectName("historyCard")
         self._store = get_store()
         self._expanded = bool(self._store.get_setting("history_expanded", False))
+        self._select_mode = False
+        self._selected: set[int] = set()  # 多选模式中被勾选的历史项索引（对应 history() 新在前顺序）
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 8, 12, 8)
@@ -462,6 +501,35 @@ class HistoryPanel(QFrame):
         outer.addWidget(self._scroll)
         self._scroll.setVisible(self._expanded)
 
+        # ---- 底部操作区：灰色线性垃圾桶 SVG 图标（无边框）；多选时出现 全选 / 删除 ----
+        self._action_row = QHBoxLayout()
+        self._action_row.setSpacing(10)
+        self._manage_btn = QPushButton()
+        self._manage_btn.setObjectName("historyManage")
+        self._manage_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._manage_btn.setCheckable(True)
+        self._manage_btn.setToolTip("多选并删除体检记录（再点一次退出）")
+        self._manage_btn.setIcon(self._svg_icon("#BFBFBF"))
+        self._manage_btn.setIconSize(QSize(18, 18))
+        self._manage_btn.setFixedSize(30, 26)
+        self._manage_btn.clicked.connect(self._on_manage_clicked)
+        self._select_all_btn = QPushButton("全选")
+        self._select_all_btn.setObjectName("historySelectAll")
+        self._select_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_all_btn.clicked.connect(self._on_select_all)
+        self._delete_btn = QPushButton("✕ 删除")
+        self._delete_btn.setObjectName("historyDelete")
+        self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._delete_btn.setToolTip("删除选中的体检记录")
+        self._delete_btn.clicked.connect(self._on_delete_selected)
+        self._action_row.addStretch()
+        self._action_row.addWidget(self._manage_btn)
+        self._action_row.addWidget(self._delete_btn)
+        self._action_row.addWidget(self._select_all_btn)
+        outer.addLayout(self._action_row)
+        # 初始：底部操作区可见性随展开/多选状态收敛（折叠时整体隐藏）
+        self._update_action_visibility()
+
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -470,6 +538,12 @@ class HistoryPanel(QFrame):
         self._store.set_setting("history_expanded", self._expanded)
         self._scroll.setVisible(self._expanded)
         self._toggle_btn.setText("▾ 收起" if self._expanded else "▸ 展开")
+        if not self._expanded and self._select_mode:
+            # 折叠时顺带退出多选，避免残留勾选态与孤儿按钮
+            self._select_mode = False
+            self._selected.clear()
+            self.refresh()
+        self._update_action_visibility()
 
     def collapse_if_expanded(self) -> bool:
         """若当前是展开状态就自动收起，返回是否真的做了收起。
@@ -484,13 +558,115 @@ class HistoryPanel(QFrame):
         self._store.set_setting("history_expanded", False)
         self._scroll.setVisible(False)
         self._toggle_btn.setText("▸ 展开")
+        self._update_action_visibility()
         return True
+
+    # ---- 多选模式 ----
+    _MANAGE_SVG = (
+        '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{c}" '
+        'stroke-width="1.4" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="4" y="4" width="16" height="16" rx="3"/>'
+        '<path d="M9 12h6" stroke-linecap="round"/></svg>'
+    )
+
+    @staticmethod
+    def _svg_icon(color: str) -> QIcon:
+        """把用户给定的线性图标 SVG 渲染成 QIcon（2x 渲染保证高分屏清晰）。"""
+        renderer = QSvgRenderer(
+            QByteArray(HistoryPanel._MANAGE_SVG.replace("{c}", color).encode("utf-8"))
+        )
+        pm = QPixmap(40, 40)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        renderer.render(painter)
+        painter.end()
+        pm.setDevicePixelRatio(2.0)
+        return QIcon(pm)
+
+    def _on_manage_clicked(self) -> None:
+        """垃圾桶图标：单击进入多选，再点一次退出（替代原「取消」按钮）。"""
+        if self._select_mode:
+            self._exit_select_mode()
+        else:
+            self._enter_select_mode()
+            self._manage_btn.setChecked(self._select_mode)  # 无记录时进不了多选，按钮回弹
+
+    def _enter_select_mode(self) -> None:
+        if not self._store.history():
+            return
+        self._select_mode = True
+        self._selected.clear()
+        self.refresh()
+        self._update_action_visibility()
+
+    def _exit_select_mode(self) -> None:
+        self._select_mode = False
+        self._selected.clear()
+        self.refresh()
+        self._update_action_visibility()
+
+    def _on_select_all(self) -> None:
+        history = self._store.history()
+        visible = min(len(history), self.MAX_DISPLAY_ROWS)
+        if visible and len(self._selected) == visible:
+            self._selected.clear()  # 已是全选 → 改为全不选
+        else:
+            self._selected = set(range(visible))
+        self.refresh()
+        self._update_action_visibility()
+
+    def _on_row_checked(self, idx: int, checked: bool) -> None:
+        if checked:
+            self._selected.add(idx)
+        else:
+            self._selected.discard(idx)
+        self._update_action_visibility()
+
+    def _update_action_visibility(self) -> None:
+        """底部操作区可见性随状态收敛，界面更干净：
+
+        - 折叠：整体隐藏（看不到垃圾桶图标，也看不到「全选」）；
+        - 展开且非多选：只显示灰色垃圾桶图标（无边框）；
+        - 展开且多选：垃圾桶点亮变蓝（进行中），显示「全选」；
+          「✕ 删除」仅在已勾选至少一项时才出现，且位于「全选」前面。
+        """
+        self._manage_btn.setChecked(self._select_mode)
+        # 图标颜色随多选状态切换：常态浅灰，多选进行中变蓝
+        self._manage_btn.setIcon(
+            self._svg_icon("#2563EB" if self._select_mode else "#BFBFBF")
+        )
+        if not self._expanded:
+            self._manage_btn.setVisible(False)
+            self._select_all_btn.setVisible(False)
+            self._delete_btn.setVisible(False)
+            return
+        self._manage_btn.setVisible(True)
+        if self._select_mode:
+            self._select_all_btn.setVisible(True)
+            n = len(self._selected)
+            self._delete_btn.setVisible(n > 0)
+            self._delete_btn.setText(f"✕ 删除 ({n})")
+            # 全选按钮文字随状态变化
+            history = self._store.history()
+            visible = min(len(history), self.MAX_DISPLAY_ROWS)
+            self._select_all_btn.setText("取消全选" if (visible and n == visible) else "全选")
+        else:
+            self._select_all_btn.setVisible(False)
+            self._delete_btn.setVisible(False)
+
+    def _on_delete_selected(self) -> None:
+        """按索引从大到小批量删除（避免删后索引位移），删完退出多选模式。"""
+        if not self._selected:
+            return
+        for index in sorted(self._selected, reverse=True):
+            self._store.delete_history_at(index)
+        self._exit_select_mode()
 
     # ------------------------------------------------------------------
     def refresh(self) -> None:
         """从存储重新渲染记录列表（新在前，最多显示 30 条，超出滚动查看）。
 
-        每条记录可点击展开 / 收起当时的逐盘详情快照。
+        多选模式下每行左侧出现复选框；普通模式下行可点击展开逐盘详情快照。
         """
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
@@ -508,7 +684,7 @@ class HistoryPanel(QFrame):
             empty.setObjectName("historyEmpty")
             self._body_layout.addWidget(empty)
             return
-        for entry in history[: self.MAX_DISPLAY_ROWS]:
+        for idx, entry in enumerate(history[: self.MAX_DISPLAY_ROWS]):
             row = QLabel(self._row_text(entry))
             level = str(entry.get("level") or "ok")
             row.setObjectName(
@@ -531,10 +707,29 @@ class HistoryPanel(QFrame):
                     _repolish(label)
 
                 row.mousePressEvent = lambda _event, cb=_toggle_row: cb()  # noqa: N802
-                self._body_layout.addWidget(row)
+
+            row_container = QWidget()
+            row_container.setObjectName("historyRow")
+            row_layout = QHBoxLayout(row_container)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+            if self._select_mode:
+                chk = QCheckBox()
+                chk.setObjectName("historyRowCheck")
+                chk.blockSignals(True)
+                chk.setChecked(idx in self._selected)
+                chk.blockSignals(False)
+                chk.toggled.connect(
+                    lambda checked, i=idx: self._on_row_checked(i, checked)
+                )
+                row_layout.addWidget(chk)
+            row_layout.addWidget(row, 1)
+            self._body_layout.addWidget(row_container)
+            if detail_lines:
                 self._body_layout.addWidget(detail_label)
-            else:
-                self._body_layout.addWidget(row)
+
+        if self._select_mode:
+            self._update_action_visibility()
 
     @staticmethod
     def _row_text(entry: dict) -> str:
@@ -1099,6 +1294,9 @@ class MainWindow(QMainWindow):
         self._detect_started_at = 0.0
         self._tray = None            # TrayController | None（延迟导入构造）
         self._instance_server = None  # QLocalServer | None（单实例保护，main.py 注入）
+        self._autostart_worker = None  # 后台开关开机启动的线程（避免 UI 卡顿）
+        self._autostart_seq = 0        # 自增序列号，丢弃过期的旧请求结果
+        self._autostart_desired = False  # 用户最近一次期望状态（用于结果对账）
         self._minimize_notified = False
         self._force_close = False
         self._detect_source = "手动体检"   # 本次检测来源（写入体检记录）
@@ -1124,7 +1322,12 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(path))
 
     def _setup_tray_and_autostart(self, enable_tray: bool, version: str) -> None:
-        """创建托盘控制器；首次真实运行默认开启开机启动（用户要求）。"""
+        """创建托盘控制器；首次真实运行默认开启开机启动（用户要求）。
+
+        v1.2.1 修复：开机启动改为「持久化偏好」——首次默认开，之后严格按
+        用户选择（勾选就建、取消就删），启动不再偷偷强制开启。偏好存于设置库
+        的 autostart_enabled（与 silent_boot_check 同机制）；首次运行记为 True。
+        """
         if not enable_tray:
             self._autostart_check.setChecked(False)
             return
@@ -1132,20 +1335,23 @@ class MainWindow(QMainWindow):
             from ui.tray import TrayController
 
             self._tray = TrayController(self, version=version, parent=self)
-        if not autostart.is_enabled():
+        pref = get_store().get_setting("autostart_enabled", None)
+        if pref is None:
+            # 首次运行：默认开启（保留原设计意图），并记下偏好，使后续开关可记忆
+            pref = True
+            get_store().set_setting("autostart_enabled", True)
+        actual = autostart.apply_preference(bool(pref))
+        # 兜底：偏好为真但 .lnk 仍缺失（首次运行 COM 偶发失败），强制再补一次并如实反映状态，
+        # 避免「界面勾选了、任务管理器启动项里却没有」的割裂感。
+        if bool(pref) and not autostart.is_enabled():
             autostart.enable()
-        else:
-            # v1.5.1 兼容迁移：旧版快捷方式不带 --boot（开机会弹窗），补写一次
-            autostart.ensure_boot_argument()
-        # v1.0 定稿迁移：旧 DiskGuard.lnk 换成新名字快捷方式
-        autostart.migrate_legacy_lnk()
+            actual = autostart.is_enabled()
         self._autostart_check.blockSignals(True)
-        self._autostart_check.setChecked(autostart.is_enabled())
+        self._autostart_check.setChecked(actual)
         self._autostart_check.blockSignals(False)
-        # v1.1.1 修复：上面 enable() 发生在托盘菜单创建之后，菜单勾选还停在旧状态；
         # 初始化完成后按真实状态补一次同步（否则「界面已勾选、右键菜单未勾选」）。
         if self._tray is not None:
-            self._tray.sync_autostart(autostart.is_enabled())
+            self._tray.sync_autostart(actual)
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -1153,61 +1359,141 @@ class MainWindow(QMainWindow):
     def _show_help_center(self) -> None:
         """右下角「?」使用说明：健康分口径 + 本版已更新内容 + 下一版计划。
 
-        v1.2 起因（三点都来自用户/坛友反馈）：
-        1. 软件本体已是 v1.2，原弹窗却还在预告「本版开发中」——自相矛盾，必须改口；
-        2. 原先底部单独挂了个「评分说明」按钮，底部太挤，合并进这里；
-        3. 坛友反馈「分数和 HardDiskSentinel 对不上，到底谁准」——
-           答案要让人随时能就地看到，而不是藏在文档里。
+        v1.2.1 美化：从原生 QMessageBox 改为自定义可滚动弹窗（QScrollArea 分区卡片）。
+        标题栏复用系统窗口标题（不内嵌重复标题）；内容区底部只留一个
+        「去 GitHub 提建议」轻量链接，底部一个「关闭」按钮。
         """
-        box = QMessageBox(self)
-        box.setWindowTitle(f"使用说明 · {APP_VERSION}")
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(
-            "<b>一、健康分是怎么算的？为什么和其他工具不一样？</b><br>"
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"使用说明 · {APP_VERSION}")
+        dlg.setFixedWidth(560)
+        dlg.setMinimumHeight(440)
+        dlg.setMaximumHeight(660)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # v1.2.1：去掉内嵌标题栏——系统窗口标题已显示「使用说明 · 版本号」和 ✕，
+        # 内嵌一份纯属重复显示。
+
+        # ---- 可滚动内容区 ----
+        scroll = QScrollArea()
+        scroll.setObjectName("helpScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("helpContent")
+        cv = QVBoxLayout(content)
+        cv.setContentsMargins(20, 16, 20, 16)
+        cv.setSpacing(14)
+
+        cv.addWidget(self._help_section(
+            "一、挖兔硬盘精灵是什么？",
+            "一款<b>免费、开源</b>的硬盘健康体检工具。<b>不用安装</b>，下载双击就能用。"
+            "点一下「开始全盘检测」，几秒钟就能知道每块硬盘的健康状况——"
+            "就像给硬盘做一次体检，出一份<b>看得懂</b>的报告。"
+            f"当前版本 {APP_VERSION}。"
+        ))
+        cv.addWidget(self._help_section(
+            "二、它能帮你解决什么问题？",
+            "· <b>提前发现隐患</b>——硬盘坏之前，SMART 数据往往早有征兆"
+            "（坏块增长、温度异常），定期体检能提前预警，给备份数据留出时间。<br>"
+            "· <b>搞清「电脑卡是不是硬盘的锅」</b>——系统变慢、卡顿、异响，"
+            "先查硬盘再花钱，不用瞎换配件。<br>"
+            "· <b>补上「SMART 全绿却突然坏盘」的盲区</b>——内置盘面扫描，"
+            "逐块读取盘面画出热力图，哪里读不出来、哪里特别慢，一目了然。<br>"
+            "· <b>二手盘 / 老盘摸底</b>——买二手硬盘、翻出多年旧盘，"
+            "先测一下再往里存重要文件。"
+        ))
+        cv.addWidget(self._help_section(
+            "三、主要功能",
+            "· <b>全盘体检</b>——温度、健康分、30+ 项 SMART 指标，一屏看懂；<br>"
+            "· <b>盘面扫描</b>——坏道热力图（快速档约 1 秒，全盘档可选）；<br>"
+            "· <b>导出报告</b>——生成一份 HTML 报告，方便存档或发给懂行的人帮你看；<br>"
+            "· <b>开机自动体检</b>——开机静默查一遍，有异常托盘提醒你。"
+        ))
+        cv.addWidget(self._help_section(
+            "四、为什么放心用？",
+            "· <b>全程只读</b>——检测绝不写入硬盘、不修改任何数据；<br>"
+            "· <b>完全离线</b>——不联网、不上传任何信息；<br>"
+            "· <b>绿色单文件</b>——免安装、不写注册表，删掉 exe 就是卸载；<br>"
+            "· <b>开源免费</b>——代码公开（GPL-3.0），任何人都可以审查。"
+        ))
+        cv.addWidget(self._help_section(
+            "五、健康分是怎么算的？为什么和其他工具不一样？",
             "本软件与其他工具（HardDiskSentinel、CrystalDiskInfo 等）的"
-            "<b>硬件读数是一致的</b>——温度、通电时间、坏块、寿命等底层数据相同，"
-            "不会出现「同一个指标你读 40℃、别人读 60℃」的情况。<br>"
-            "差别出在「健康分」这一步：<b>分数是各家自己定的算法</b>。"
-            "同样一块盘，有的把「温度偏高」扣得重、有的扣得轻；"
-            "有的对少量坏块立刻降级、有的要累积到一定量才提示。"
-            "所以<b>分数高低不完全一致是正常的</b>，"
-            "它只反映「按本软件的保守程度」的健康状况，"
-            "不代表硬件的真实寿命百分比，也不代表谁更准。<br><br>"
-            "<b>判断硬盘是否真的要换，请只看硬件硬指标：</b><br>"
+            "<b>硬件读数是一致的</b>——温度、通电时间、坏块、寿命等底层数据相同。"
+            "差别出在「健康分」：<b>分数是各家自己定的算法</b>，扣分轻重不同，"
+            "所以<b>分数不完全一致是正常的</b>——它<b>不代表谁更准</b>，"
+            "也不代表硬件的真实寿命百分比。<br><br>"
+            "<b>判断硬盘是否真的要换，请看硬件硬指标：</b><br>"
             "· 重映射扇区 / 待映射扇区 / 无法修正扇区是否持续增长<br>"
-            "· SMART 是否报 Unhealthy<br>"
-            "· 厂商自带检测工具（官方软件）的结论<br>"
-            "这些是客观事实，不受各家评分算法影响。<br><br>"
-            f"<b>二、{APP_VERSION} 已经更新了什么？</b><br>"
-            "· <b>新增盘面扫描</b>——逐块只读读取盘面，画出 20×20 盘面地图，"
-            "找出读不出来或读得特别慢的地方（坏道），"
-            "补上「SMART 全绿但盘实际不稳」这个盲区。<br>"
-            "· <b>修复找不到硬盘</b>——某些精简版系统上会自动换用另一条检测通道。<br>"
-            "· <b>不再误报「0% 寿命」</b>——早期硬盘没有寿命数据时不再当成危险。<br>"
-            "· <b>CRC 提示不再自相矛盾</b>、<b>脏位提示不再吓人</b>、"
-            "<b>问候语不再串时段</b>。<br><br>"
-            "<b>三、下一版（v1.3）计划</b><br>"
-            "· <b>邮件 / 微信提醒</b>——健康分掉到阈值时自动推送通知，"
-            "不用惦记着手动体检<br>"
-            "· <b>USB 移动固态硬盘识别增强</b>——改善 USB 硬盘盒下的健康数据读取<br>"
-            "· <b>Intel VMD / 服务器 RAID 支持</b>——让被控制器挡住的盘也能被识别<br>"
-            "· <b>SAS 企业盘支持</b>、<b>NVMe 主控型号与固件信息</b><br>"
-            "以上都在开发中，你最想要哪个？欢迎到 GitHub 仓库提 Issue 留言。<br><br>"
-            "<span style='color:#888'>本软件全程只读检测，不写入硬盘任何数据。"
-            "健康分说明也会出现在导出的 HTML 报告页脚里。</span>"
+            "· SMART 是否报 Unhealthy"
+        ))
+        cv.addWidget(self._help_section(
+            f"六、{APP_VERSION} 已经更新了什么？",
+            "· <b>新增盘面扫描</b>——见上面第二、三条；<br>"
+            "· <b>修复某些精简版系统找不到硬盘</b>——自动换用备用检测通道；<br>"
+            "· <b>修复多处误报</b>——早期硬盘不再误报「0% 寿命」、"
+            "CRC / 脏位提示不再吓人。"
+        ))
+        cv.addWidget(self._help_section(
+            "七、下一版计划（v1.3）",
+            "邮件 / 微信<b>提醒</b>、<b>USB</b> 移动固态识别增强、Intel VMD / RAID 支持、"
+            "SAS 企业盘、NVMe 主控信息——开发中，欢迎来 GitHub 提建议。"
+        ))
+
+        # ---- 内容区底部轻量链接（只留 GitHub 提建议；报告/数据文件夹入口已删） ----
+        links = QHBoxLayout()
+        links.setSpacing(18)
+        github_link = QPushButton("去 GitHub 提建议")
+        github_link.setObjectName("helpLink")
+        github_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        github_link.clicked.connect(
+            lambda _checked=False: QDesktopServices.openUrl(QUrl(GITHUB_ISSUES_URL))
         )
-        ok_btn = box.addButton("明白了", QMessageBox.ButtonRole.AcceptRole)
-        box.setDefaultButton(ok_btn)
-        report_btn = box.addButton("查看详细报告…", QMessageBox.ButtonRole.ActionRole)
-        github_btn = box.addButton("去 GitHub 提建议", QMessageBox.ButtonRole.ActionRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is report_btn and self._results:
-            self._export_report()
-        elif clicked is github_btn:
-            # 提建议要直达 Issues 页，不是仓库首页（用户是来提问题的）
-            QDesktopServices.openUrl(QUrl(GITHUB_ISSUES_URL))
+        links.addWidget(github_link)
+        links.addStretch()
+        cv.addLayout(links)
+
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)
+
+        # ---- 底部关闭按钮 ----
+        footer = QHBoxLayout()
+        footer.setContentsMargins(20, 12, 20, 16)
+        footer.addStretch()
+        ok_btn = QPushButton("关闭")
+        ok_btn.setObjectName("primary")
+        ok_btn.setMinimumWidth(120)
+        ok_btn.clicked.connect(dlg.accept)
+        footer.addWidget(ok_btn)
+        root.addLayout(footer)
+
+        dlg.exec()
+
+    @staticmethod
+    def _help_section(title: str, html: str) -> QFrame:
+        """生成一段「标题 + 正文」的帮助卡片（用于滚动内容区）。
+
+        行间距由正文 div 的 line-height 控制（Qt 富文本只认 HTML 内联样式，
+        QSS 的 line-height 在 QLabel 上不生效），v1.2.1 按用户要求放宽。
+        """
+        card = QFrame()
+        card.setObjectName("helpCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(8)
+        h = QLabel(title)
+        h.setObjectName("helpCardTitle")
+        v.addWidget(h)
+        b = QLabel()
+        b.setObjectName("helpCardBody")
+        b.setTextFormat(Qt.TextFormat.RichText)
+        b.setWordWrap(True)
+        b.setText(f'<div style="line-height:190%">{html}</div>')
+        v.addWidget(b)
+        return card
 
     def _build_ui(self, version: str) -> None:
         central = QWidget()
@@ -1805,10 +2091,39 @@ class MainWindow(QMainWindow):
     # 开机启动（绿色方式：启动文件夹快捷方式）
     # ------------------------------------------------------------------
     def _on_autostart_toggled(self, checked: bool) -> None:
-        """主界面 / 托盘任意一处开关：即时生效并同步另一处。"""
-        ok = autostart.enable() if checked else autostart.disable()
-        actual = autostart.is_enabled()
-        if not ok or actual != checked:
+        """开机启动开关：乐观响应勾选，真实写入放到后台线程（丝滑无卡顿）。
+
+        v1.2.1 优化：早年同步调用 autostart.enable()/disable() 会触发 PowerShell
+        COM（约 1 秒），导致主线程卡顿；现在立即按用户意图记录偏好并启动后台
+        任务，勾选当下即生效，完成后才回写 autostart_enabled 并同步托盘；
+        失败则回滚勾选并提示。快速连点用序列号丢弃过期结果，避免新旧意图打架。
+        """
+        self._autostart_desired = bool(checked)
+        self._autostart_seq += 1
+        seq = self._autostart_seq
+        if self._autostart_worker is not None and self._autostart_worker.isRunning():
+            # 旧请求仍在跑：断开其信号并放弃结果，让最新意图独占
+            try:
+                self._autostart_worker.disconnect()
+            except Exception:
+                pass
+            self._autostart_worker.quit()
+        worker = _AutostartToggleWorker(bool(checked), self)
+        self._autostart_worker = worker
+        worker.done.connect(
+            lambda ok, actual, s=seq: self._on_autostart_done(ok, actual, s)
+        )
+        worker.start()
+
+    def _on_autostart_done(self, ok: bool, actual: bool, seq: int) -> None:
+        """后台开关完成后的回调：回写偏好、必要时回滚勾选并同步托盘。
+
+        仅处理与当前意图匹配的（最新）结果；seq 不匹配的过期旧请求直接丢弃。
+        """
+        if seq != self._autostart_seq:
+            return  # 过期的旧请求结果，丢弃，避免覆盖用户最新意图
+        get_store().set_setting("autostart_enabled", actual)
+        if not ok or actual != self._autostart_desired:
             # 失败：回滚勾选状态并提示（容错，不崩溃）
             self._autostart_check.blockSignals(True)
             self._autostart_check.setChecked(actual)

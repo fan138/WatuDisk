@@ -160,12 +160,12 @@ QLabel#emptyTip { color: #9CA3AF; font-size: 13px; }
 
 /* ---- 药丸按钮 ---- */
 QPushButton#primary { background: #2563EB; color: #FFFFFF; border: none;
-                      border-radius: 17px; padding: 8px 28px; font-size: 13px; font-weight: 600; }
+                      border-radius: 17px; padding: 8px 16px; font-size: 13px; font-weight: 600; }
 QPushButton#primary:hover { background: #1D4ED8; }
 QPushButton#primary:pressed { background: #1E40AF; }
 QPushButton#primary:disabled { background: #B8C6E8; }
 QPushButton#secondary { background: #FFFFFF; color: #2563EB; border: 1px solid #C7D2FE;
-                        border-radius: 17px; padding: 7px 22px; font-size: 13px; font-weight: 600; }
+                        border-radius: 17px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
 QPushButton#secondary:hover { background: #EEF2FF; }
 QPushButton#secondary:disabled { color: #9CA3AF; border-color: #E5E7EB; background: #FFFFFF; }
 
@@ -203,6 +203,33 @@ QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
 QScrollBar::handle:vertical { background: #D1D5DB; border-radius: 4px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+
+/* ---- 体检记录：垃圾桶图标 / 多选删除按钮（v1.2.1 美化） ---- */
+QPushButton#historyManage { background: transparent; border: none;
+                           border-radius: 7px; padding: 0; }
+QPushButton#historyManage:hover { background: #F3F4F6; }
+QPushButton#historyManage:checked { background: #EEF2FF; }
+QPushButton#historySelectAll {
+    background: transparent; color: #6B7280; border: none; font-size: 12px; padding: 3px 8px; }
+QPushButton#historySelectAll:hover { color: #2563EB; }
+QPushButton#historyDelete { background: #FCEBEB; color: #C0392B; border: 1px solid #F1D4D4;
+                            border-radius: 14px; padding: 3px 14px; font-size: 12px; font-weight: 600; }
+QPushButton#historyDelete:hover { background: #F8D7D7; }
+QCheckBox#historyRowCheck { spacing: 4px; }
+QCheckBox#historyRowCheck::indicator { width: 15px; height: 15px; border-radius: 4px;
+                                       border: 1px solid #C7D2FE; background: #FFFFFF; }
+QCheckBox#historyRowCheck::indicator:checked { background: #2563EB; border: 1px solid #2563EB; }
+
+/* ---- 使用说明弹窗（v1.2.1 美化：自定义可滚动；标题栏复用系统窗口标题） ---- */
+QDialog { background: #FFFFFF; }
+QWidget#helpContent { background: #FFFFFF; }
+QFrame#helpCard { background: #F8FAFC; border: 1px solid #EEF0F3; border-radius: 10px; }
+QLabel#helpCardTitle { font-size: 13px; font-weight: 700; color: #1F2937; }
+QLabel#helpCardBody { font-size: 12px; color: #4B5563; }  /* 行距由富文本内联 line-height 控制 */
+QScrollArea#helpScroll { background: #FFFFFF; border: none; }
+QPushButton#helpLink { background: transparent; border: none; color: #2563EB;
+                       font-size: 12px; padding: 2px 4px; }
+QPushButton#helpLink:hover { color: #1D4ED8; text-decoration: underline; }
 
 QMessageBox { background: #FFFFFF; }
 """

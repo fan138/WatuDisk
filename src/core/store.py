@@ -153,6 +153,32 @@ class Store:
         with self._lock:
             return [dict(item) for item in self._data["history"]]
 
+    def delete_history_at(self, index: int) -> bool:
+        """按位置删除一条体检记录（0 = 最新），成功返回 True。
+
+        v1.2.1：回应「历史报告删不了」的反馈——此前只有追加与读取，
+        没有任何删除入口。索引对应 history() 的返回顺序（新在前）。
+        """
+        with self._lock:
+            hist = self._data.get("history") or []
+            if 0 <= index < len(hist):
+                del hist[index]
+                self._save_locked()
+                return True
+            return False
+
+    def clear_history(self) -> int:
+        """清空全部体检记录，返回被清空条数。
+
+        v1.2.1：配合界面「清空记录」按钮；写入原子、失败降级为内存模式。
+        """
+        with self._lock:
+            count = len(self._data.get("history") or [])
+            if count:
+                self._data["history"] = []
+                self._save_locked()
+            return count
+
     # ------------------------------------------------------------------
     # 忽略项
     # ------------------------------------------------------------------

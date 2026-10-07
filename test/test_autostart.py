@@ -84,6 +84,63 @@ def test_is_enabled_default_dir_readonly_check():
     assert result == before, "is_enabled 不应改变开关状态"
 
 
+def test_apply_preference_enables_when_true():
+    """偏好为 True 时确保 .lnk 存在（含 --boot 迁移 + 旧品牌名迁移）。"""
+    tmp = _make_tmp_startup_dir()
+    try:
+        assert autostart.apply_preference(True, tmp) is True
+        assert autostart.is_enabled(tmp) is True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_apply_preference_disables_when_false():
+    """偏好为 False 时确保 .lnk 不存在——用户关闭后不再被偷偷改回。
+
+    这正是 AppInn 反馈的核心痛点：旧逻辑每次启动无条件 enable，
+    取消勾选后下次又自动勾上。apply_preference(False) 必须保持关闭。
+    """
+    tmp = _make_tmp_startup_dir()
+    try:
+        autostart.enable(tmp)
+        assert autostart.is_enabled(tmp) is True
+        assert autostart.apply_preference(False, tmp) is False
+        assert autostart.is_enabled(tmp) is False
+        # 再调用一次仍为 False（幂等，不会偷偷重建）
+        assert autostart.apply_preference(False, tmp) is False
+        assert autostart.is_enabled(tmp) is False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_apply_preference_retries_enable_on_transient_failure():
+    """首次 enable 偶发失败时，apply_preference(True) 应重试一次并成功建出 .lnk。
+
+    对应首次打开软件时「界面勾选了但任务管理器启动项里却没有」的根因之一：
+    WScript.Shell COM 在程序初始化阶段偶发失败，重试一次即可规避。
+    """
+    tmp = _make_tmp_startup_dir()
+    try:
+        calls = {"n": 0}
+        real_enable = autostart.enable
+
+        def flaky_enable(startup_dir=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return False  # 模拟首次 COM 偶发失败
+            return real_enable(startup_dir)
+
+        autostart.enable = flaky_enable
+        try:
+            assert autostart.apply_preference(True, tmp) is True
+            assert autostart.is_enabled(tmp) is True
+            assert calls["n"] == 2, "应恰好重试一次 enable"
+        finally:
+            autostart.enable = real_enable
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     from _runner import run_module_tests
 

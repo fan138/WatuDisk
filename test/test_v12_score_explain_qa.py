@@ -118,11 +118,14 @@ def test_help_covers_key_claims():
 
 def test_help_uses_rich_text_and_no_result_leak():
     """两点硬要求：①富文本渲染（否则 <br> 会以字面量显示）；
-    ②「查看报告」在还没检测出结果时不能崩（缓存字段名写错会 AttributeError）。"""
+    ②「查看详细报告 / 打开数据文件夹」两个链接已按用户要求（2026-10-07）删除，
+    不得残留——若日后要加回来，必须用 self._results 缓存字段（写错会 AttributeError，
+    这是本用例最初守护的原始价值）。"""
     body = _help_body()
     assert "setTextFormat(Qt.TextFormat.RichText)" in body, "未启用富文本，<br> 会原样显示"
-    assert "self._results" in body, "查看报告入口未使用正确的结果缓存字段"
-    assert "self._last_results" not in body, "结果缓存字段名笔误（应为 self._results）"
+    assert "查看详细报告" not in body, "「查看详细报告」链接应已按用户要求删除"
+    assert "打开数据文件夹" not in body, "「打开数据文件夹」链接应已按用户要求删除"
+    assert "去 GitHub 提建议" in body, "唯一保留的反馈链接缺失"
 
 
 def test_help_offers_feedback_channel():

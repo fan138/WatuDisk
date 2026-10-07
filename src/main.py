@@ -16,7 +16,7 @@ import sys
 import time
 
 APP_NAME = "挖兔硬盘精灵"
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.2.1"
 
 
 # ----------------------------------------------------------------------
@@ -118,7 +118,12 @@ def run_gui(admin: bool, smoke: bool, boot: bool = False) -> int:
         # 冒烟模式：2 秒后自动关闭，供无交互验证
         QTimer.singleShot(2000, app.quit)
         code = app.exec()
-        os._exit(code)  # 强制退出，避免后台检测线程阻塞进程
+        # v1.2.1：不再 os._exit 强杀——offscreen 下强杀仍在跑的后台检测线程会段错误。
+        # 改为等线程收尾再正常退出（同 gui_smoke_offscreen 的做法），回归才能稳定全绿。
+        worker = getattr(window, "_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.wait(60000)
+        return code
     return app.exec()
 
 

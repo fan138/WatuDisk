@@ -33,6 +33,7 @@ QA_V12_MODULES = [
     "test_v12_grid_heatmap_qa",  # v1.2 盘面地图（20×20 格子热力图 + 响应时间维度 + 抽查密度防误导）
     "test_v12_surface_scan_dialog_qa",  # v1.2 对话框交互增强（按钮合并/隐藏后台扫/多盘连扫/结果复用）
     "test_v12_surface_scan_nonmodal_qa",  # v1.2 非模态联动（布局不抖动/实时进度/免确认免硬弹窗/隐藏差异化）
+    "test_store",  # v1.2.1 体检记录删除接口（清空 / 单条删除）
 ]
 
 LEGACY_MODULES = [
