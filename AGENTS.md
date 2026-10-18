@@ -110,7 +110,7 @@ sha256sum 目标文件 备份文件     # 两者哈希必须一致，才算备�
 | 版本 | 状态 | git 提交 | exe SHA-256 |
 | --- | --- | --- | --- |
 | v1.2.1 | 已发布（GitHub + Gitee） | `cd6b36e1d4d2103d01f60a7cf0e76b376ab0fd59` | `d8aab8fca070dc7e3b23c6bc154c592e5cf6bf73b673c73a0fc016e859ecd785` |
-| v1.2.2 | 收官版，**已构建待用户实测验收**（未 commit / 未发布） | 验收后生成（发布前不得提前提交公开） | 本地构建 `e17cd497f228251a89ab5e09a2b529144f2c72586251e83ac9fd6016325bdf5b`（`deploy/WatuDiskSprite_v1.2.2.exe`，28,104,286 B；含「健康记录」标签合并 + 性能优化；历史构建已归档至 `.workbuddy/backup_20261018_healthtab/`，优化前全量备份在 `backup_before_perf_20261018/`） |
+| v1.2.2 | 收官版，**已发布**（GitHub Release v1.2.2 + Gitee 待同步） | 远端 `3c94cd64ca2c`（本地平行提交 `9548839`，同树不同父，属 API 发布预期现象） | `3eaaf5953b4cad6893c0b865c02843792e7c1dce9c99fd639232120f3e1e10fc`（`deploy/WatuDiskSprite_v1.2.2.exe`，28,103,697 B；含「健康记录」标签合并 + 性能优化；历史构建归档于 `.workbuddy/backup_20261018_healthtab/`，优化前全量备份在 `backup_before_perf_20261018/`） |
 
 ### 4.2 v1.2.2 改了什么（2026-10-18 实现）
 
