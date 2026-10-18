@@ -16,7 +16,7 @@ import sys
 import time
 
 APP_NAME = "挖兔硬盘精灵"
-APP_VERSION = "v1.2.1"
+APP_VERSION = "v1.2.2"
 
 
 # ----------------------------------------------------------------------
@@ -375,8 +375,10 @@ def _selftest() -> int:
         disk, {"Temperature": 40, "Wear": 5}, [], 0, [], [], dict(nvme_good, percentage_used=92)
     )
     check(
-        "verdict nvme pct skipped when wear present",
-        v_nvme_pct_wear["score"] == 100 and all("已使用寿命" not in r for r in v_nvme_pct_wear["reasons"]),
+        # v1.2.2（#20）：NVMe 直读使用率与计数器冲突时以直读为准（Windows 计数器
+        # 可能滞后），且只扣一次分（不双重计磨损）。
+        "verdict nvme direct read wins over stale counter",
+        v_nvme_pct_wear["score"] == 70 and any("已使用寿命" in r for r in v_nvme_pct_wear["reasons"]),
         f"score={v_nvme_pct_wear['score']}",
     )
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from core.disk_info import format_hours_pro, format_int, format_size
 from core.nvme_health import format_data_units
+from core.verdict import resolve_wear_used
 
 LEVEL_OK = 0
 LEVEL_CAUTION = 1
@@ -145,6 +146,7 @@ def metric_items_for_result(result: dict) -> list[dict]:
         取不到的字段 text 为「—」且 level=LEVEL_OK。
     """
     counters = result.get("counters") or {}
+    disk = result.get("disk") or {}
     attrs = result.get("smart_attrs") or []
     nvme = result.get("nvme_health") or {}
     items: list[dict] = []
@@ -218,20 +220,28 @@ def metric_items_for_result(result: dict) -> list[dict]:
             and media_errors_int == 0
         )
 
-    wear = counters.get("Wear") if counters else None
+    # v1.2.2（#20）：寿命解析统一走 verdict.resolve_wear_used——NVMe 优先直读
+    # percentage_used、Wear=0 且高通电判无数据，与判读层/界面摘要同源，
+    # 不再出现「通电 4.3 万小时却显示剩余 100%」这类误导（SA400 实证）。
+    wear_used = resolve_wear_used(disk, counters, nvme)
+    wear_signal = counters.get("Wear") if counters else None
+    wear_from_counters = isinstance(wear_signal, int) and 0 <= wear_signal <= 100
     nvme_pct = nvme.get("percentage_used")
-    if isinstance(wear, int) and 0 <= wear <= 100:
-        life = max(0, 100 - wear)
-        # 仅抑制 wear==100（Windows 无数据时的默认值）这一种误报情形；
+    if wear_used == 100 and _hardware_clean():
+        # v1.2（#18）：仅抑制 wear==100（Windows 无数据时的默认值）这一种误报情形；
         # Wear=95 等非默认值视为真实测量，仍按剩余寿命正常显示与着色。
-        if life == 0 and wear == 100 and _hardware_clean():
-            add("life_remaining", "剩余寿命（SSD）", "未提供（早期硬盘）")
-        else:
-            add("life_remaining", "剩余寿命（SSD）", f"{life}%", level_for("life_remaining", life))
-    elif isinstance(nvme_pct, int) and 0 <= nvme_pct <= 100:
-        life = max(0, 100 - nvme_pct)
+        add("life_remaining", "剩余寿命（SSD）", "未提供")
+    elif wear_used is not None:
+        life = max(0, 100 - wear_used)
         add("life_remaining", "剩余寿命（SSD）", f"{life}%", level_for("life_remaining", life))
-        add("pct_used", "使用率（NVMe）", f"{nvme_pct}%", level_for("pct_used", nvme_pct))
+        # 寿命行由计数器 Wear 驱动时，NVMe 直读使用率作为镜像事实补充一行；
+        # 由直读值驱动时不重复展示（同一事实只警示一次）。
+        if isinstance(nvme_pct, int) and 0 <= nvme_pct <= 100 and not wear_from_counters:
+            add("pct_used", "使用率（NVMe）", f"{nvme_pct}%", level_for("pct_used", nvme_pct))
+    elif isinstance(wear_signal, int) or isinstance(nvme_pct, int):
+        # 有信号但不可信（Wear=0 且高通电 / NVMe 255 未上报）→ 如实显示未提供，
+        # 绝不给误导性百分比。
+        add("life_remaining", "剩余寿命（SSD）", "未提供")
 
     # 温度（counters → NVMe → SMART 0xC2 原始值兜底；仅接受合理摄氏度区间）
     temp = counters.get("Temperature") if counters else None

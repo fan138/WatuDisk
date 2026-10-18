@@ -34,6 +34,9 @@ QA_V12_MODULES = [
     "test_v12_surface_scan_dialog_qa",  # v1.2 对话框交互增强（按钮合并/隐藏后台扫/多盘连扫/结果复用）
     "test_v12_surface_scan_nonmodal_qa",  # v1.2 非模态联动（布局不抖动/实时进度/免确认免硬弹窗/隐藏差异化）
     "test_store",  # v1.2.1 体检记录删除接口（清空 / 单条删除）
+    "test_v122_life_no_data_qa",  # v1.2.2 #20 寿命「假数据」双向校验（SA400 假 100%）
+    "test_v122_reminder_log_qa",  # v1.2.2 提醒记录可回看 + 同类异常 4 小时冷却
+    "test_v122_perf_pipeline_qa",  # v1.2.2 性能：采集合并 + standard 失败当日缓存（功能零变更）
 ]
 
 LEGACY_MODULES = [
@@ -113,13 +116,20 @@ def main() -> int:
     failed_modules: list[str] = []
     started = time.perf_counter()
 
-    # 预检：托盘/单实例相关测试要求无 DiskGuard.exe 占用命名管道
+    # 预检：托盘/单实例相关测试要求无 WatuDiskSprite.exe 占用命名管道
+    # （管道名 WatuDiskSprite-LocalInstance，见 tray.INSTANCE_KEY；
+    #  2026-10-18 修正：此前查的是 DiskGuard.exe——v1.0 改名前的旧名，
+    #  永远匹配不到真实进程，预检形同虚设）
     probe = subprocess.run(  # noqa: S603
-        ["tasklist", "/FI", "IMAGENAME eq DiskGuard.exe"],
-        capture_output=True, text=True, timeout=30,
+        ["tasklist", "/FI", "IMAGENAME eq WatuDiskSprite.exe"],
+        capture_output=True, timeout=30,
     )
-    if "DiskGuard.exe" in (probe.stdout or ""):
-        print("!! 检测到正在运行的 DiskGuard.exe，请先关闭后再跑回归（影响托盘单实例用例）")
+    # tasklist 在中文 Windows 上输出 GBK；text=True 按 UTF-8 解码会炸 reader
+    # thread（UnicodeDecodeError -> communicate IndexError，整个回归挂掉）。
+    # 2026-10-18 修正：按字节捕获、GBK 解码 + replace，与系统语言解耦。
+    probe_text = (probe.stdout or b"").decode("gbk", errors="replace")
+    if "WatuDiskSprite.exe" in probe_text:
+        print("!! 检测到正在运行的 WatuDiskSprite.exe，请先关闭后再跑回归（影响托盘单实例用例）")
         return 2
 
     for name in QA_V12_MODULES + LEGACY_MODULES:

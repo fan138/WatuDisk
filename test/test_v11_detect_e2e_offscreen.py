@@ -85,24 +85,29 @@ def test_detect_worker_seven_steps_in_order_real_machine():
 
 
 def test_detect_worker_failure_tolerance_all_ps_fails():
-    """mock run_ps_json 永远返回 None：0/1/3/5 步落橙!，但 7 步流程完整走完不崩溃。"""
-    import core.powershell_runner as ps_runner
-    import ui.main_window as mw
+    """mock 所有 PowerShell 输出通道永远失败：0/1/3/5 步落橙!，7 步完整走完不崩溃。
 
-    original = ps_runner.run_ps_json
-    # DetectWorker 内部 from core import disk_info -> disk_info.run_ps_json 是同一函数对象，
-    # 两个命名空间都要替换
+    v1.2.2 性能优化后注意：卷检查的合并查询走 run_ps_text（分隔符分段 JSON），
+    与 run_ps_json 是两个出口，都必须 mock 掉——否则真实 WMI 通道会成功返回，
+    「全部失败」的场景就不成立（曾因此误报过一次失败）。
+    """
+    import core.powershell_runner as ps_runner
+    import ui.main_window as mw  # noqa: F401
+
+    original_json = ps_runner.run_ps_json
+    original_text = ps_runner.run_ps_text
+    # DetectWorker 内部 from core import disk_info -> 模块级 from-import 已把
+    # 函数对象绑定进 core.disk_info / core.volume_check 命名空间，两处都要替换
+    import core.disk_info as disk_info_mod
+    import core.volume_check as volume_mod
+
+    original_disk_json = disk_info_mod.run_ps_json
+    original_vol_text = volume_mod.run_ps_text
     try:
         ps_runner.run_ps_json = lambda *a, **k: None
-        mw_run = None
-        # main_window._detect 内通过 disk_info.get_physical_disks() 调用，
-        # 而 disk_info 模块内引用的 run_ps_json 来自 core.powershell_runner 的绑定，
-        # 模块级 from-import 已把函数对象绑定进 core.disk_info 命名空间
-        import core.disk_info as disk_info_mod
-
-        original_disk_info = disk_info_mod.run_ps_json
+        ps_runner.run_ps_text = lambda *a, **k: None
         disk_info_mod.run_ps_json = lambda *a, **k: None
-        del mw_run
+        volume_mod.run_ps_text = lambda *a, **k: None
 
         worker = DetectWorker(None)
         recorder = _run_worker(worker)
@@ -127,10 +132,13 @@ def test_detect_worker_failure_tolerance_all_ps_fails():
             if not ok:
                 assert summary.strip(), f"失败步骤 {index} 的 summary 为空"
     finally:
-        ps_runner.run_ps_json = original
+        ps_runner.run_ps_json = original_json
+        ps_runner.run_ps_text = original_text
         import core.disk_info as disk_info_mod
+        import core.volume_check as volume_mod
 
-        disk_info_mod.run_ps_json = original_disk_info
+        disk_info_mod.run_ps_json = original_disk_json
+        volume_mod.run_ps_text = original_vol_text
 
 
 def test_detect_worker_steps_definition():

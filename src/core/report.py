@@ -14,7 +14,7 @@ from core.nvme_health import format_data_units
 from core.verdict import GRADE_COLORS, GRADE_LABELS, grade_of_verdict
 
 APP_NAME = "挖兔硬盘精灵"
-APP_VERSION = "v1.2.1"
+APP_VERSION = "v1.2.2"
 
 _STYLE = """
 body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
@@ -58,6 +58,8 @@ h2 { font-size: 15px; margin: 14px 0 6px; }
 .grid-note { color: #9CA3AF; font-size: 11px; margin: 2px 0 0; }
 tr.grid-row td { background: #FCFCFD; padding: 4px 10px 10px; }
 tr.grid-row:hover { background: #FCFCFD; }
+/* 口径说明脚注（v1.2.2 #15 复合温度） */
+.note { color: #9CA3AF; font-size: 11px; margin: 4px 0 0; line-height: 1.7; }
 /* 页脚：链接做低调处理，不抢正文视线，但确实可点 */
 .footer { color: #9CA3AF; font-size: 12px; margin-top: 22px; line-height: 1.9;
           border-top: 1px solid #E5E7EB; padding-top: 14px; }
@@ -433,6 +435,12 @@ def _disk_section(result: dict) -> str:
             f"<tr><td>{_esc(k)}</td><td>{_colored(v, lvl)}</td></tr>" for k, v, lvl in nvme_rows
         )
         lines.append("</table>")
+        # v1.2.2（#15）：复合温度口径说明——与界面文案保持一致，避免用户拿
+        # AIDA64 等工具的单传感器读数来对比时误判为 bug。
+        lines.append(
+            "<p class='note'>注：复合温度取盘内最高传感器读数；"
+            "其他工具若显示单颗传感器（如 AIDA64），相差 10~20℃ 属正常。</p>"
+        )
 
     if attrs:
         lines.append("<h2>SMART 属性明细</h2><table><tr><th>ID</th><th>属性名称</th><th>当前值</th><th>原始值</th></tr>")

@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer
@@ -22,6 +23,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from core import autostart
+from core.store import get_store
 from core.verdict import (
     GRADE_COLORS,
     GRADE_CRITICAL,
@@ -407,11 +409,16 @@ class TrayController(QObject):
         )
 
     def notify_custom(self, title: str, text: str, icon=QSystemTrayIcon.MessageIcon.Information,
-                      open_on_click: bool | None = None) -> None:
+                      open_on_click: bool | None = None, context: dict | None = None,
+                      source: str | None = None) -> None:
         """通知入口（v1.7）：自绘气泡；点击行为按级别分级——
 
-        info（健康）：点击仅关闭气泡；warn/danger：点击打开主界面。
+        info（健康）：点击仅关闭气泡；warn/danger：点击打开主界面并展开
+        「提醒记录」面板——用户反馈气泡一飘而过、想回看时找不到地方（v1.2.2）。
         open_on_click 显式传入时优先生效。
+
+        v1.2.2：异常级气泡（warn/danger）弹出即静默写入「提醒记录」有界日志。
+        info 级不记——健康/完成类记了只会把真正的提醒挤出有界日志。
         """
         level_map = {
             QSystemTrayIcon.MessageIcon.Critical: "danger",
@@ -421,10 +428,28 @@ class TrayController(QObject):
         level = level_map.get(icon, "info")
         if open_on_click is None:
             open_on_click = level in ("warn", "danger")
+        if level != "info":
+            # 异常级提醒落「提醒记录」：时间/级别/标题/文案/来源/关键数字
+            get_store().append_notify_log({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "level": level,
+                "title": title,
+                "text": text,
+                "source": source or "",
+                "context": {str(k): v for k, v in (context or {}).items() if v},
+            })
+            refresh = getattr(self._window, "refresh_reminder_panel", None)
+            if callable(refresh):
+                refresh()
         self.pulse(2.7)  # 提醒前图标绿点微闪
         toasts = self._ensure_toasts()
         if toasts is not None:
-            toasts.push(level, title, text, on_click=self._window.wake_up if open_on_click else None)
+            click_handler = None
+            if open_on_click:
+                click_handler = (
+                    getattr(self._window, "wake_up_and_show_reminders", None) or self._window.wake_up
+                )
+            toasts.push(level, title, text, on_click=click_handler)
         else:
             self._tray.showMessage(title, text, icon, 5000)
 
@@ -538,6 +563,16 @@ class TrayController(QObject):
         max_temp = self._max_temp(results)
         has_danger = summary["danger"] > 0
         has_warn = summary["warning"] > 0
+        # 提醒记录的「关键数字」：文案是诗情化的一句，数字在这里补上——
+        # 用户回看记录时能看到到底是多热、多紧、几块盘要关注（v1.2.2）
+        context: dict = {}
+        if isinstance(max_temp, int) and max_temp > 0:
+            context["最高温"] = f"{max_temp}°C"
+        if worst_space is not None:
+            context["最紧空间"] = f"剩 {worst_space:.0f}%"
+        attention = summary["danger"] + summary["warning"]
+        if attention:
+            context["需关注盘数"] = f"{attention} 块"
 
         if worst_space is not None and worst_space < 10:
             category = "space_critical"
@@ -555,7 +590,7 @@ class TrayController(QObject):
         if category == "ok":
             if not notify_policy.should_notify_healthy(profile):
                 return
-        elif not notify_policy.on_worse_notify(profile):
+        elif not notify_policy.should_notify_worse(profile, category):
             return
 
         title, text = tender.pick(category)
@@ -580,7 +615,9 @@ class TrayController(QObject):
             else QSystemTrayIcon.MessageIcon.Warning if category in ("warn", "space_critical", "hot")
             else QSystemTrayIcon.MessageIcon.Information
         )
-        self.notify_custom(title, text, icon)
+        self.notify_custom(title, text, icon, context=context, source="定时体检")
+        if category != "ok":
+            notify_policy.mark_worse_notified(category)  # 冷却计时起点
 
         if self._bg_worker is not None:
             self._bg_worker.deleteLater()

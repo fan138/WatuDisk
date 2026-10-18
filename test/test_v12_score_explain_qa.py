@@ -10,7 +10,9 @@
 并入右下角「?」使用说明弹窗，底部按钮更干净。因此断言锁定的是：
 - 右下角「?」入口存在，且连到使用说明弹窗；
 - 弹窗里必须含健康分口径的三段核心论点；
-- 弹窗里必须含「本版已更新内容」与「下一版计划」；
+- 弹窗里必须含「本版已更新内容」；
+- **v1.2.2 收官（2026-10-18）**：「下一版计划」段改为「功能定型」声明，
+  且不得再承诺邮件/微信提醒（违背「完全离线」卖点）；
 - **不得再出现「v1.2 开发中」这类自相矛盾措辞**（软件本体已是 v1.2）；
 - 报告层仍保留同样口径的说明卡片（两处说法必须一致）。
 """
@@ -87,19 +89,22 @@ def test_no_contradictory_wording():
 
 
 def test_help_states_current_version_updates():
-    """弹窗要如实说明本版已经更新了什么（盘面扫描、找不到硬盘修复等）。"""
+    """弹窗要如实说明本版已经更新了什么（v1.2.2：寿命修复 / 固件 / 温度口径）。"""
     body = _help_body()
     assert "已经更新了什么" in body, "缺少「本版更新内容」段落"
-    for item in ("盘面扫描", "找不到硬盘"):
+    for item in ("寿命", "固件"):
         assert item in body, f"更新清单缺少：{item}"
 
 
-def test_help_lists_next_version_plan():
-    """弹窗要预告 v1.3 计划——含坛友最想要的邮件/微信提醒。"""
+def test_help_states_feature_freeze():
+    """v1.2.2 收官：弹窗必须如实告知「功能定型」，且不得再承诺邮件/微信提醒
+    （远程通知违背「完全离线」核心卖点，已从下一版计划中移除）。"""
     body = _help_body()
-    assert "下一版" in body or "v1.3" in body, "缺少「下一版计划」段落"
-    for item in ("提醒", "USB"):
-        assert item in body, f"下一版计划缺少：{item}"
+    assert "功能定型" in body, "缺少「功能定型」声明"
+    assert "不再增加新功能" in body, "定型声明缺少「不再增加新功能」"
+    assert "邮件" not in body and "微信" not in body, "不得再承诺邮件/微信提醒"
+    # 建议留门：已记录的功能构想仍可被提及（GitHub Issues），但不得承诺开发
+    assert "GitHub" in body, "定型声明应给出建议入口（GitHub Issues）"
 
 
 def test_help_shows_current_version_number():

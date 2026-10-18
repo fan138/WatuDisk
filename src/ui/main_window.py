@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QSystemTrayIcon,
     QTableWidget,
     QTableWidgetItem,
@@ -60,7 +61,7 @@ from core.nvme_health import format_data_units
 from core.report import APP_VERSION  # 版本号与 report/main.py 同源；直接 import main 会循环依赖
 from core.resource_path import app_icon_path
 from core.store import get_store
-from core.verdict import GRADE_LABELS, grade_of_verdict
+from core.verdict import GRADE_LABELS, grade_of_verdict, resolve_wear_used
 from ui.theme import QSS
 
 # 结论 -> (药丸样式 objectName, 药丸文字)（v1.0 三档语义保留作回退）
@@ -175,8 +176,11 @@ class DetectWorker(QThread):
         from core import disk_info, nvme_health, smart_parser, volume_check
 
         # ---- 步骤 0：枚举硬盘设备 ----
+        # v1.2.2 性能优化 A：枚举与可靠性计数器合并为一条 PowerShell 命令
+        # （原先分两次执行 Get-PhysicalDisk，实测各约 5-6 秒；合并后只跑一遍，
+        # 骨架卡片随枚举结果立即出现，计数器结果在步骤 3 直接取用）。
         self.step_started.emit(0)
-        disks = disk_info.get_physical_disks()
+        disks, counters_map = disk_info.get_disks_with_counters()
         if disks:
             self._emit_result(0, True, f"发现 {len(disks)} 块硬盘")
             self.disks_enumerated.emit(list(disks))  # v1.8：立即显示硬盘条目
@@ -213,9 +217,8 @@ class DetectWorker(QThread):
         else:
             self._emit_result(2, False, "无法读取 SMART 属性（权限不足或系统不支持）")
 
-        # ---- 步骤 3：读取温度与寿命（可靠性计数器 + NVMe 健康日志直读） ----
+        # ---- 步骤 3：读取温度与寿命（计数器已在步骤 0 随枚举一并取回；NVMe 健康日志直读） ----
         self.step_started.emit(3)
-        counters_map = disk_info.get_reliability_counters()
         nvme_map: dict[str, dict] = {}
         for disk in disks:
             try:
@@ -453,16 +456,23 @@ class HistoryPanel(QFrame):
     展开后底部一个灰色垃圾桶图标（无边框）→ 点击进入多选模式（每行出现
     复选框）→ 勾选后出现「✕ 删除」图标（位于「全选」前面），支持多选
     批量删除；再次点击垃圾桶退出多选。
+
+    v1.2.2 起支持 `embedded=True`（slim 模式）：作为「健康记录」卡片的
+    一个标签页内嵌使用——头部 / 折叠开关由外层卡片统一管理，本面板只
+    负责列表渲染与多选删除，`_expanded` 恒为 True（显隐随外层）。
+    独立使用（embedded=False）时行为与之前完全一致。
     """
 
     MAX_DISPLAY_ROWS = 30
     _SCROLL_MAX_HEIGHT = 260  # 展开时记录区的最大像素高度，超出出现滚动条
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, embedded: bool = False) -> None:
         super().__init__(parent)
         self.setObjectName("historyCard")
+        self._embedded = bool(embedded)
         self._store = get_store()
-        self._expanded = bool(self._store.get_setting("history_expanded", False))
+        # slim 模式：折叠态由外层「健康记录」卡片持有，本面板恒展开
+        self._expanded = True if self._embedded else bool(self._store.get_setting("history_expanded", False))
         self._select_mode = False
         self._selected: set[int] = set()  # 多选模式中被勾选的历史项索引（对应 history() 新在前顺序）
 
@@ -484,7 +494,10 @@ class HistoryPanel(QFrame):
         header.addWidget(self._count_label)
         header.addStretch()
         header.addWidget(self._toggle_btn)
-        outer.addLayout(header)
+        if not self._embedded:
+            # slim 模式下头部隐藏（计数改由外层卡片显示），但控件保留：
+            # refresh() 仍写 _count_label，独立构造的用例也照旧可断言。
+            outer.addLayout(header)
 
         self._body = QWidget()
         self._body_layout = QVBoxLayout(self._body)
@@ -534,6 +547,8 @@ class HistoryPanel(QFrame):
 
     # ------------------------------------------------------------------
     def _on_toggle(self) -> None:
+        if self._embedded:
+            return  # slim 模式折叠由外层「健康记录」卡片管理
         self._expanded = not self._expanded
         self._store.set_setting("history_expanded", self._expanded)
         self._scroll.setVisible(self._expanded)
@@ -551,7 +566,12 @@ class HistoryPanel(QFrame):
         v1.2：磁盘卡片的详情是就地展开的，而体检记录固定在卡片列表下方。
         记录展开时占掉一屏高度，卡片展开的详情会被它挡住、点开等于白点。
         所以展开卡片前先把记录收起来，把位置让给用户要看的东西。
+
+        v1.2.2：slim 模式下显隐由外层「健康记录」卡片统一管理，此处不再
+        自行收起（DiskCard 的收起链已优先命中外层卡片）。
         """
+        if self._embedded:
+            return False
         if not self._expanded:
             return False
         self._expanded = False
@@ -745,6 +765,287 @@ class HistoryPanel(QFrame):
         return "  ·  ".join(part for part in parts if part)
 
 
+class ReminderPanel(QFrame):
+    """提醒记录面板（v1.2.2）：异常提醒的可回看日志。
+
+    用户反馈：温度 / 异常气泡弹出几秒就消失，想回头看记录找不到地方，
+    又担心同样的提醒反复弹造成干扰。本面板与 notify_policy 的同类冷却配套：
+    - 数据源：`store.notify_log()`（有界 200 条；只有异常级 warn/danger 才记录，
+      info 级健康 / 完成类不记——记了只会把真正的提醒挤出去）；
+    - 每条附「关键数字」（最高温 / 最紧空间 / 需关注盘数），回看时不止一句诗情文案；
+    - 样式复用体检记录的对象名（historyCard / historyRow* 等），不另造一套 CSS；
+    - 默认折叠（折叠状态存设置项），点 warn/danger 气泡会带展开并定位到最新一条。
+
+    v1.2.2 起支持 `embedded=True`（slim 模式）：作为「健康记录」卡片的
+    「提醒记录」标签页内嵌使用——头部 / 折叠开关由外层卡片统一管理。
+    """
+
+    MAX_DISPLAY_ROWS = 30
+    _SCROLL_MAX_HEIGHT = 260
+
+    def __init__(self, parent: QWidget | None = None, embedded: bool = False) -> None:
+        super().__init__(parent)
+        self.setObjectName("historyCard")
+        self._embedded = bool(embedded)
+        self._store = get_store()
+        # slim 模式：折叠态由外层「健康记录」卡片持有，本面板恒展开
+        self._expanded = True if self._embedded else bool(self._store.get_setting("reminder_expanded", False))
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(4)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        self._title = QLabel("提醒记录")
+        self._title.setObjectName("historyHeader")
+        self._count_label = QLabel("")
+        self._count_label.setObjectName("note")
+        self._toggle_btn = QPushButton(("▾ 收起" if self._expanded else "▸ 展开"))
+        self._toggle_btn.setObjectName("historyToggle")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._on_toggle)
+        header.addWidget(self._title)
+        header.addWidget(self._count_label)
+        header.addStretch()
+        header.addWidget(self._toggle_btn)
+        if not self._embedded:
+            outer.addLayout(header)
+
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("historyScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setMaximumHeight(self._SCROLL_MAX_HEIGHT)
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setSpacing(1)
+        self._scroll.setWidget(self._body)
+        outer.addWidget(self._scroll)
+        self._scroll.setVisible(self._expanded)
+
+        self.refresh()
+
+    # ------------------------------------------------------------------
+    def _on_toggle(self) -> None:
+        if self._embedded:
+            return  # slim 模式折叠由外层「健康记录」卡片管理
+        self._expanded = not self._expanded
+        self._store.set_setting("reminder_expanded", self._expanded)
+        self._scroll.setVisible(self._expanded)
+        self._toggle_btn.setText("▾ 收起" if self._expanded else "▸ 展开")
+
+    def expand_and_reveal(self) -> None:
+        """展开并刷新（点 warn/danger 气泡直达用；最新一条在最顶上）。
+
+        slim 模式下显隐由外层卡片管理，这里只负责刷新与滚动归位。
+        """
+        if not self._embedded:
+            if not self._expanded:
+                self._expanded = True
+                self._store.set_setting("reminder_expanded", True)
+                self._scroll.setVisible(True)
+                self._toggle_btn.setText("▾ 收起")
+        self.refresh()
+        bar = self._scroll.verticalScrollBar()
+        if bar is not None:
+            bar.setValue(0)
+
+    def collapse_if_expanded(self) -> bool:
+        """若当前是展开状态就自动收起，返回是否真的做了收起。
+
+        与 HistoryPanel 同一理由：两个记录面板都占一屏高度，展开中的磁盘
+        卡片详情会被遮住。展开卡片前先收起，把位置让给用户要看的东西。
+        slim 模式下由外层「健康记录」卡片统一管理。
+        """
+        if self._embedded:
+            return False
+        if not self._expanded:
+            return False
+        self._expanded = False
+        self._store.set_setting("reminder_expanded", False)
+        self._scroll.setVisible(False)
+        self._toggle_btn.setText("▸ 展开")
+        return True
+
+    # ------------------------------------------------------------------
+    def refresh(self) -> None:
+        """从存储重新渲染提醒列表（新在前，最多显示 30 条，超出滚动查看）。"""
+        while self._body_layout.count():
+            item = self._body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                # 与体检记录同一手法：先隐藏再 deleteLater，避免新旧行叠字
+                widget.hide()
+                widget.deleteLater()
+
+        entries = self._store.notify_log()
+        self._count_label.setText(f"共 {len(entries)} 条")
+        if not entries:
+            empty = QLabel("暂无提醒记录 —— 出现温度 / 空间 / 健康异常时，这里会留下记录。")
+            empty.setObjectName("historyEmpty")
+            self._body_layout.addWidget(empty)
+            return
+        for entry in entries[: self.MAX_DISPLAY_ROWS]:
+            row = QLabel(self._row_text(entry))
+            level = str(entry.get("level") or "warn")
+            row.setObjectName(
+                "historyRowBad" if level == "danger"
+                else "historyRowWarn" if level == "warn"
+                else "historyRowOk"
+            )
+            row.setWordWrap(True)
+            self._body_layout.addWidget(row)
+            context = entry.get("context")
+            if isinstance(context, dict) and context:
+                ctx = QLabel("　· " + " · ".join(f"{k} {v}" for k, v in context.items()))
+                ctx.setObjectName("historyDetail")
+                ctx.setWordWrap(True)
+                self._body_layout.addWidget(ctx)
+
+    @staticmethod
+    def _row_text(entry: dict) -> str:
+        level = str(entry.get("level") or "warn")
+        icon = "✗" if level == "danger" else "！"
+        parts = [f"{icon} {entry.get('time') or ''}"]
+        title = str(entry.get("title") or "")
+        text = str(entry.get("text") or "")
+        parts.append(f"{title}：{text}" if title and text else (title or text))
+        source = str(entry.get("source") or "")
+        if source:
+            parts.append(f"[{source}]")
+        return "  ·  ".join(part for part in parts if part)
+
+
+class HealthRecordPanel(QFrame):
+    """健康记录卡片（v1.2.2）：体检记录 + 提醒记录合并为一个卡片，标签页切换。
+
+    用户反馈：主界面底部「体检记录」「提醒记录」两张卡片上下排开，各占
+    一行、各带一个展开开关，查找成本高。合并为一张「健康记录」卡片：
+    - 头部：标题 + 汇总计数（体检 N 次 · 提醒 M 条）+ 展开 / 收起；
+    - 展开后出现标签栏：「体检记录」（默认）/「提醒记录」，各带条数角标；
+    - 内容区是 QStackedWidget，两个 slim 模式的子面板（无自有头部）；
+    - 展开态与当前标签都持久化，下次打开保持用户上次看的位置；
+    - 点 warn/danger 气泡 = 唤起主窗口 + 展开 + 自动切到「提醒记录」标签；
+    - 展开磁盘卡片前同样先自动收起（占位逻辑与合并前一致）。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("historyCard")
+        self._store = get_store()
+        self._expanded = bool(self._store.get_setting("health_expanded", False))
+        tab = str(self._store.get_setting("health_tab", "history") or "history")
+        self._tab = tab if tab in ("history", "reminder") else "history"
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(4)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        self._title = QLabel("健康记录")
+        self._title.setObjectName("historyHeader")
+        self._count_label = QLabel("")
+        self._count_label.setObjectName("note")
+        self._toggle_btn = QPushButton("▾ 收起" if self._expanded else "▸ 展开")
+        self._toggle_btn.setObjectName("historyToggle")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._on_toggle)
+        header.addWidget(self._title)
+        header.addWidget(self._count_label)
+        header.addStretch()
+        header.addWidget(self._toggle_btn)
+        outer.addLayout(header)
+
+        # ---- 标签栏（仅展开时可见；checked 态由 QSS #healthTab:checked 驱动） ----
+        self._tabs_widget = QWidget()
+        tabs = QHBoxLayout(self._tabs_widget)
+        tabs.setContentsMargins(0, 0, 0, 0)
+        tabs.setSpacing(2)
+        self._tab_history_btn = QPushButton("体检记录")
+        self._tab_reminder_btn = QPushButton("提醒记录")
+        for btn in (self._tab_history_btn, self._tab_reminder_btn):
+            btn.setObjectName("healthTab")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            tabs.addWidget(btn)
+        tabs.addStretch()
+        self._tab_history_btn.clicked.connect(lambda: self._switch_tab("history"))
+        self._tab_reminder_btn.clicked.connect(lambda: self._switch_tab("reminder"))
+        outer.addWidget(self._tabs_widget)
+
+        # ---- 内容区：两个 slim 子面板（无自有头部，显隐随外层） ----
+        self._stack = QStackedWidget()
+        self.history_panel = HistoryPanel(embedded=True)
+        self.reminder_panel = ReminderPanel(embedded=True)
+        self._stack.addWidget(self.history_panel)
+        self._stack.addWidget(self.reminder_panel)
+        outer.addWidget(self._stack)
+
+        self._apply_tab_state()
+        self._apply_expanded_state(initial=True)
+        self.refresh()
+
+    # ------------------------------------------------------------------
+    def _on_toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._store.set_setting("health_expanded", self._expanded)
+        self._apply_expanded_state()
+
+    def _apply_expanded_state(self, initial: bool = False) -> None:
+        self._toggle_btn.setText("▾ 收起" if self._expanded else "▸ 展开")
+        self._tabs_widget.setVisible(self._expanded)
+        self._stack.setVisible(self._expanded)
+        if not initial:
+            self.refresh()
+
+    def _switch_tab(self, tab: str) -> None:
+        if tab == self._tab:
+            return
+        self._tab = tab
+        self._store.set_setting("health_tab", tab)
+        self._apply_tab_state()
+
+    def _apply_tab_state(self) -> None:
+        self._tab_history_btn.setChecked(self._tab == "history")
+        self._tab_reminder_btn.setChecked(self._tab == "reminder")
+        self._stack.setCurrentIndex(0 if self._tab == "history" else 1)
+
+    def collapse_if_expanded(self) -> bool:
+        """展开磁盘卡片前自动收起（与合并前两张卡片同一占位逻辑）。"""
+        if not self._expanded:
+            return False
+        self._expanded = False
+        self._store.set_setting("health_expanded", False)
+        self._apply_expanded_state()
+        return True
+
+    def expand_and_reveal(self) -> None:
+        """点 warn/danger 气泡直达：展开并切到「提醒记录」标签（最新一条在顶上）。"""
+        if not self._expanded:
+            self._expanded = True
+            self._store.set_setting("health_expanded", True)
+        self._switch_tab("reminder")
+        self._apply_expanded_state()
+        self.refresh()
+        bar = self.reminder_panel._scroll.verticalScrollBar()
+        if bar is not None:
+            bar.setValue(0)
+
+    def refresh(self) -> None:
+        """刷新两个子面板 + 头部汇总计数 + 标签条数角标。"""
+        self.history_panel.refresh()
+        self.reminder_panel.refresh()
+        history_count = len(self._store.history())
+        reminder_count = len(self._store.notify_log())
+        self._count_label.setText(f"体检 {history_count} 次 · 提醒 {reminder_count} 条")
+        self._tab_history_btn.setText(f"体检记录 {history_count}")
+        self._tab_reminder_btn.setText(f"提醒记录 {reminder_count}")
+
+
 class DiskCard(QFrame):
     """单块磁盘的卡片，点击可展开 / 收起检测详情。"""
 
@@ -926,9 +1227,12 @@ class DiskCard(QFrame):
         if isinstance(temp, int) and temp > 0:
             parts.append(f"{temp}°C")
 
-        wear = counters.get("Wear") if counters else None
-        if media == "SSD" and isinstance(wear, int) and wear >= 0:
-            parts.append(f"寿命剩余 {max(0, 100 - wear)}%")
+        # v1.2.2（#20）：寿命解析与判读层同源（verdict.resolve_wear_used）——
+        # NVMe 优先直读使用率；Wear=0 且通电≥1万小时 / NVMe 未上报时显示
+        # 「寿命未提供」，不再出现 SA400 那种「通电 4.3 万小时却显示 100%」的误导。
+        wear = resolve_wear_used(disk, counters, result.get("nvme_health"))
+        if media == "SSD" or str(disk.get("bus_type") or "").upper() == "NVME":
+            parts.append(f"寿命剩余 {max(0, 100 - wear)}%" if wear is not None else "寿命未提供")
 
         hours_text = format_hours_pro(counters.get("PowerOnHours")) if counters else None
         if not hours_text:
@@ -958,9 +1262,13 @@ class DiskCard(QFrame):
 
         # 基本信息
         health_raw = str(disk.get("health_status") or "").lower()
+        # v1.2.2（#14）：固件版本——二手盘/翻新盘识别的三要素（型号+固件+序列号）之一
+        firmware = str(disk.get("firmware") or "").strip()
+        firmware_text = f" · 固件 {firmware}" if firmware else ""
         add_text(
             f"基本信息：序列号 {disk.get('serial') or '无'} · 接口 {_bus_text(str(disk.get('bus_type') or ''))} · "
             f"容量 {format_size(disk.get('size'))} · 系统状态 {HEALTH_TEXT.get(health_raw, health_raw or '未知')}"
+            f"{firmware_text}"
         )
 
         # 专业指标（两列网格，取不到显示「—」）
@@ -1082,6 +1390,9 @@ class DiskCard(QFrame):
         temp = nvme.get("temperature_c")
         if isinstance(temp, int) and temp > -100:
             lines.append(f"复合温度：{temp}°C")
+            # v1.2.2（#15）：口径说明——复合温度取盘内最高传感器，与只显示单颗
+            # 传感器的工具（如 AIDA64）存在 10~20℃ 差值属正常，不是读数错误。
+            lines.append("（口径说明：复合温度取盘内最高传感器读数；若其他工具显示的是单颗传感器，相差 10~20℃ 属正常）")
         spare = nvme.get("available_spare_pct")
         if spare is not None:
             threshold = nvme.get("spare_threshold")
@@ -1254,17 +1565,27 @@ class DiskCard(QFrame):
         super().mousePressEvent(event)
 
     def _collapse_history_below(self) -> None:
-        """展开本卡片前，先把体检记录收起（若它是展开的）。
+        """展开本卡片前，先把「健康记录」收起（若它是展开的）。
 
-        v1.2：体检记录固定在卡片列表下方并占掉一屏高度，展开中的卡片详情
-        会被它整块遮住——用户点开卡片却什么也看不到，像是没反应。
-        沿 parent 链找主窗口的体检记录面板，找不到就静默跳过（不因此报错）。
+        v1.2：记录面板固定在卡片列表下方并占掉一屏高度，展开中的卡片
+        详情会被它整块遮住——用户点开卡片却什么也看不到，像是没反应。
+        沿 parent 链找主窗口的记录面板，找不到就静默跳过（不因此报错）。
+        v1.2.2：体检 / 提醒已合并为「健康记录」卡片，优先命中它；
+        旧的 _history_panel / _reminder_panel 分支保留作兜底。
         """
         node = self.parent()
         while node is not None:
+            health = getattr(node, "_health_panel", None)
+            if isinstance(health, HealthRecordPanel):
+                health.collapse_if_expanded()
+                return
             panel = getattr(node, "_history_panel", None)
-            if isinstance(panel, HistoryPanel):
-                panel.collapse_if_expanded()
+            reminder = getattr(node, "_reminder_panel", None)
+            if isinstance(panel, HistoryPanel) or isinstance(reminder, ReminderPanel):
+                if isinstance(panel, HistoryPanel):
+                    panel.collapse_if_expanded()
+                if isinstance(reminder, ReminderPanel):
+                    reminder.collapse_if_expanded()
                 return
             node = node.parent()
 
@@ -1432,15 +1753,25 @@ class MainWindow(QMainWindow):
         ))
         cv.addWidget(self._help_section(
             f"六、{APP_VERSION} 已经更新了什么？",
-            "· <b>新增盘面扫描</b>——见上面第二、三条；<br>"
-            "· <b>修复某些精简版系统找不到硬盘</b>——自动换用备用检测通道；<br>"
-            "· <b>修复多处误报</b>——早期硬盘不再误报「0% 寿命」、"
-            "CRC / 脏位提示不再吓人。"
+            "· <b>修复寿命显示</b>——不报告磨损的硬盘（如金士顿 SA400）不再显示"
+            "误导性的「剩余 100%」，如实改为「寿命未提供」；<br>"
+            "· <b>新增固件版本</b>——硬盘详情显示固件号，识别二手盘 / 翻新盘更容易；<br>"
+            "· <b>启动更快</b>——检测流程优化（功能零变更）：完整检测实测"
+            "从约 40 秒降到约 15 秒（快约 63%），开机体检同样受益；<br>"
+            "· <b>新增提醒记录</b>——温度 / 空间 / 异常提醒不再一飘而过，"
+            "主界面「健康记录」卡片里随时回看（附温度、空间等关键数字），"
+            "同类提醒 4 小时内不重复打扰；<br>"
+            "· <b>补充温度口径说明</b>——说明「复合温度」与其他工具的单传感器读数"
+            "为何会相差 10~20℃；<br>"
+            "· <b>修复多处提示措辞</b>——CRC、脏位等提示不再自相矛盾。"
         ))
         cv.addWidget(self._help_section(
-            "七、下一版计划（v1.3）",
-            "邮件 / 微信<b>提醒</b>、<b>USB</b> 移动固态识别增强、Intel VMD / RAID 支持、"
-            "SAS 企业盘、NVMe 主控信息——开发中，欢迎来 GitHub 提建议。"
+            "七、关于后续版本",
+            f"{APP_VERSION} 起，挖兔硬盘精灵进入<b>功能定型</b>：不再增加新功能，"
+            "只持续修复问题、跟进 Windows 新版兼容性。<br>"
+            "大家建议过的功能（USB 移动固态识别、Linux 支持、健康趋势图等）"
+            "都已记录在 GitHub Issues——如果需求增多，会重新评估开发。"
+            "感谢每一位提建议的朋友。"
         ))
 
         # ---- 内容区底部轻量链接（只留 GitHub 提建议；报告/数据文件夹入口已删） ----
@@ -1532,9 +1863,13 @@ class MainWindow(QMainWindow):
         self._scroll.setWidget(list_container)
         root.addWidget(self._scroll, 1)
 
-        # ---- 体检记录面板（v1.3：健康痕迹，可折叠） ----
-        self._history_panel = HistoryPanel()
-        root.addWidget(self._history_panel)
+        # ---- 健康记录卡片（v1.2.2：体检记录 + 提醒记录合并，标签页切换） ----
+        self._health_panel = HealthRecordPanel()
+        root.addWidget(self._health_panel)
+        # 内嵌子面板句柄保留：关机守护 / 体检完成等刷新点经 getattr 软调用，
+        # 合并后由健康卡片统一调度（refresh 两个子面板 + 汇总计数）。
+        self._history_panel = self._health_panel.history_panel
+        self._reminder_panel = self._health_panel.reminder_panel
 
         # ---- 底部：体检步骤清单 + 阶段文字 + 进度条 + 按钮 ----
         bottom = QVBoxLayout()
@@ -1694,7 +2029,7 @@ class MainWindow(QMainWindow):
         if not results:
             self._tray.notify_custom(
                 "开机体检未完成", "本次未能读取硬盘信息，可打开主界面手动检测。",
-                QSystemTrayIcon.MessageIcon.Warning,
+                QSystemTrayIcon.MessageIcon.Warning, source="开机静默体检",
             )
             return
         summary = verdict.summarize(results)
@@ -1707,19 +2042,25 @@ class MainWindow(QMainWindow):
                     pct = volume.get("free_pct")
                     if isinstance(pct, (int, float)) and (worst_space is None or pct < worst_space):
                         worst_space = pct
+            # v1.2.2：空间偏低 / 告急是异常，按 Warning 记入「提醒记录」并可点击直达
+            # （此前误用 Information，会被当成健康问候既不记录也不响应点击）
             if worst_space is not None and worst_space < 10:
                 title, text = tender.pick("space_critical")
+                icon = QSystemTrayIcon.MessageIcon.Warning
             elif worst_space is not None and worst_space < 20:
                 title, text = tender.pick("space_low")
+                icon = QSystemTrayIcon.MessageIcon.Warning
             else:
                 title, text = tender.pick("ok")
-            self._tray.notify_custom(f"{greeting}", f"{text}", QSystemTrayIcon.MessageIcon.Information)
+                icon = QSystemTrayIcon.MessageIcon.Information
+            self._tray.notify_custom(f"{greeting}", f"{text}", icon, source="开机静默体检")
         else:
             _, text = tender.pick("danger" if summary["danger"] else "warn")
             self._tray.notify_custom(
                 "开机体检发现异常",
                 f"{text}",
                 QSystemTrayIcon.MessageIcon.Warning,
+                source="开机静默体检",
             )
 
     def show_pending_boot_alert(self) -> None:
@@ -1733,7 +2074,10 @@ class MainWindow(QMainWindow):
         reasons = "；".join((alert or {}).get("reasons") or [])
         text = f"{device}：{reasons}。建议立即备份重要数据。"
         if self._tray is not None:
-            self._tray.notify_custom("上次关机前发现硬盘异常", text, QSystemTrayIcon.MessageIcon.Critical)
+            self._tray.notify_custom(
+                "上次关机前发现硬盘异常", text, QSystemTrayIcon.MessageIcon.Critical,
+                source="关机守护",
+            )
         get_store().append_history({
             "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "level": "danger",
@@ -1863,10 +2207,14 @@ class MainWindow(QMainWindow):
 
             if summary["danger"]:
                 _, text = tender.pick("danger")
-                self._tray.notify_custom("体检报告", text, QSystemTrayIcon.MessageIcon.Critical)
+                self._tray.notify_custom(
+                    "体检报告", text, QSystemTrayIcon.MessageIcon.Critical, source="手动体检"
+                )
             elif summary["warning"]:
                 _, text = tender.pick("warn")
-                self._tray.notify_custom("体检报告", text, QSystemTrayIcon.MessageIcon.Warning)
+                self._tray.notify_custom(
+                    "体检报告", text, QSystemTrayIcon.MessageIcon.Warning, source="手动体检"
+                )
             else:
                 _, text = tender.pick("ok")
                 # v1.7.1：手动体检健康气泡标题也用时段问候语（此前仅开机体检有问候）
@@ -2153,6 +2501,28 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.setFocus()
+
+    def refresh_reminder_panel(self) -> None:
+        """托盘写入新提醒后刷新面板（tray.notify_custom 经 getattr 软调用，
+        窗口未建面板时静默跳过——单测 / smoke 场景不因此报错）。
+
+        v1.2.2：体检 / 提醒合并为「健康记录」卡片，刷新它即同时刷新两个
+        子面板与头部汇总计数（角标上的条数要跟着变）。
+        """
+        panel = getattr(self, "_health_panel", None)
+        if panel is not None:
+            panel.refresh()
+
+    def wake_up_and_show_reminders(self) -> None:
+        """点 warn/danger 气泡：唤起主窗口 + 展开「健康记录」并切到提醒标签。
+
+        用户反馈气泡一飘而过、想回看找不到地方——点击直接落到记录上，
+        「看完就没了」变成「随时能找回」（v1.2.2）。
+        """
+        self.wake_up()
+        panel = getattr(self, "_health_panel", None)
+        if panel is not None:
+            panel.expand_and_reveal()
 
     def force_quit(self) -> None:
         """托盘菜单「退出」：真正退出进程（清理后台线程与托盘图标）。"""

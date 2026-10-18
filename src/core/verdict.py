@@ -134,6 +134,44 @@ def _to_int(value: object) -> int | None:
         return None
 
 
+# v1.2.2（#20）：Windows 的 Get-StorageReliabilityCounter 在拿不到真实磨损时，
+# Wear 字段会填回**默认值**——100 和 0 两侧都出现过：SV300 假耗尽（v1.2.0 已防）、
+# 金士顿 SA400 假全新（v1.2.2 修）。默认值语义的字段必须做双向校验。
+_WEAR_ZERO_MIN_POWER_HOURS = 10000  # Wear=0 判「无数据」所需的最小通电小时数（约连续通电 1.15 年）
+_NVME_PCT_UNREPORTED = 255          # NVMe 规范：Percentage Used = 255 表示「未上报」
+
+
+def resolve_wear_used(disk: dict, counters: dict | None, nvme_health: dict | None) -> int | None:
+    """解析 SSD 已消耗寿命百分比（Wear）；无可靠数据时返回 None。
+
+    v1.2.2（#20 金士顿 SA400「寿命剩余假 100%」）三条规则：
+    1. NVMe 优先采信健康日志**直读**的 percentage_used——它比 Windows 转手的计数器
+       可信（这正是 core.nvme_health 模块存在的意义）；255 是 NVMe 规范规定的
+       「未上报」值，同样判无数据；
+    2. Wear=0 且通电时间 ≥10,000 小时判为无数据——这块盘不可能还是新的
+       （坛友 dddd592 实证：SA400 通电 43,393 小时，金士顿官方工具与
+       CrystalDiskInfo 均显示剩余 54%，Windows 却给 Wear=0，旧版显示成 100%）；
+    3. Wear=95 这类非默认值仍按真实测量采信；其余情况原样返回。
+
+    verdict 评分 / metrics 指标表 / 界面摘要三处共用本函数，保证口径一致。
+    """
+    media = str(disk.get("media_type") or "").upper()
+    bus = str(disk.get("bus_type") or "").upper()
+    if not (media == "SSD" or bus == "NVME"):
+        return None
+    nvme_pct = _to_int((nvme_health or {}).get("percentage_used"))
+    if bus == "NVME" and nvme_pct is not None:
+        return None if nvme_pct >= _NVME_PCT_UNREPORTED else nvme_pct
+    wear = _to_int((counters or {}).get("Wear"))
+    if wear is None:
+        return None
+    if wear == 0:
+        hours = _to_int((counters or {}).get("PowerOnHours"))
+        if hours is not None and hours >= _WEAR_ZERO_MIN_POWER_HOURS:
+            return None
+    return wear
+
+
 def evaluate_disk(
     disk: dict,
     counters: dict | None = None,
@@ -249,7 +287,7 @@ def evaluate_disk(
     media = str(disk.get("media_type") or "").upper()
     bus = str(disk.get("bus_type") or "").upper()
     is_ssd = media == "SSD" or bus == "NVME"
-    wear_used = _to_int(counters.get("Wear")) if counters else None
+    wear_used = resolve_wear_used(disk, counters, nvme_health)
     # v1.2（#18）：交叉校验「寿命耗尽」是否可信。
     # 部分早期 SATA SSD（如 2013 年的金士顿 SV300S37A240G）硬件不提供寿命/磨损
     # 数据，Windows 的 Get-StorageReliabilityCounter 会填回默认 Wear=100。
@@ -266,9 +304,28 @@ def evaluate_disk(
         and c05 == 0
         and (nvme_media_errors_for_wear is None or nvme_media_errors_for_wear == 0)
     )
-    if is_ssd and wear_used is not None and wear_used >= 0:
-        if "life_remaining" in ignored or "pct_used" in ignored:
+    if is_ssd:
+        # NVMe 直读使用率（0-254，255=规范规定的未上报）由第 5.5 节按 v1.2 既有
+        # 权重判读扣分，本节不重复结论——同一事实只扣一次分。
+        # v1.2.2（#20）：直读比 Windows 转手的计数器可信，故 NVMe 有直读数据时
+        # 本节直接让位（金士顿 SA400 的假 0 / 部分盘 255 未上报同理）。
+        nvme_pct_raw = _to_int((nvme_health or {}).get("percentage_used"))
+        nvme_pct_reported = (
+            bus == "NVME" and nvme_pct_raw is not None and nvme_pct_raw < _NVME_PCT_UNREPORTED
+        )
+        if nvme_pct_reported:
+            pass  # 交给 5.5 节
+        elif "life_remaining" in ignored or "pct_used" in ignored:
             suppressed.append("SSD 剩余寿命")
+        elif wear_used is None:
+            # v1.2.2（#20）：Windows 返回 Wear=0（无数据时的默认值）或 NVMe 未上报时，
+            # 不显示剩余寿命、也不据默认值下任何结论——与 Wear=100 防线相对，
+            # 默认值两侧都不可信（金士顿 SA400 通电 4.3 万小时曾被显示成 100%）。
+            reasons.append(
+                "这款 SSD 未提供可靠的寿命数据（部分硬盘不报告磨损，系统接口会返回 0 这类默认值），"
+                "因此不显示剩余寿命百分比；请以重映射、待映射、无法修正扇区等硬件指标"
+                "和定期备份为准。"
+            )
         else:
             remaining = max(0, 100 - wear_used)
             if remaining < 10:
@@ -374,9 +431,15 @@ def evaluate_disk(
                     "频繁异常断电会缩短硬盘寿命，建议尽量正常关机。",
                 )
 
-        # 使用率（NVMe Percentage Used）：Wear 通道有数据时不重复扣（避免双重计磨损）
+        # 使用率（NVMe Percentage Used）：v1.2.2（#20）起，NVMe 有直读使用率时
+        # 第 3 节让位给本节（直读比计数器可信）；255 是规范规定的「未上报」值，
+        # 不参与扣分（旧代码会把 255 当成「已使用寿命 255%」误扣）。
         percentage_used = _to_int(nvme.get("percentage_used"))
-        if is_ssd and wear_used is None and percentage_used is not None and percentage_used > 0:
+        if (
+            is_ssd
+            and percentage_used is not None
+            and 0 < percentage_used < _NVME_PCT_UNREPORTED
+        ):
             if "pct_used" in ignored or "life_remaining" in ignored:
                 suppressed.append("SSD 使用率")
             elif percentage_used >= 90:

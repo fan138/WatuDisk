@@ -5,6 +5,11 @@
 >
 > **WatuDiskSprite** — a free, offline, read-only Windows disk-health guardian: SATA/NVMe SMART, six-tier color alerts, silent boot-time scan, and one-click HTML report.
 
+> ### ⚡ 给 AI 与接手开发者
+> **在本仓库做任何事之前，先读 [`AGENTS.md`](AGENTS.md)。** 里面有项目边界、发布铁律、
+> 开发环境实测值、模块地图与踩坑清单。与本文件冲突时**以 `AGENTS.md` 为准**。
+> 当前对外发布版本为 **v1.2.2**（收官版：功能定型，不再增加新功能）。
+
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://www.microsoft.com/windows)
 [![Package](https://img.shields.io/badge/package-单文件绿色版-brightgreen)](https://github.com/fan138/WatuDisk/releases)
@@ -25,6 +30,9 @@
 - 全程离线运行，不联网、不收集任何数据；
 - 只读检测，绝不向硬盘写入任何数据；
 - 适配 SATA / NVMe（含国产主控固件），管理员权限下读取完整 SMART 信息。
+
+> 📌 **项目状态**：v1.2.2 起功能定型——不再增加新功能，只持续修复问题、跟进 Windows 新版兼容性。
+> 大家建议过的功能已全部记录在 [GitHub Issues](https://github.com/fan138/WatuDisk/issues)，需求增多时会重新评估。
 
 ## ✨ 功能特性
 
@@ -82,6 +90,43 @@
 - 读取完整 SMART 数据需要管理员权限（程序会自动请求 UAC 提权）；
 - 若未以管理员身份运行，部分检测项会受限，界面会明确提示。
 
+## 📝 v1.2.2 更新了什么（收官版）
+
+这一版把社区反馈里遗漏的问题一次补齐，并进入**功能定型**：此后不再增加新功能，只修问题、跟进系统兼容性。
+
+**修掉一个会误导人的数字：寿命「假 100%」**
+
+- 金士顿 SA400 这类不上报磨损的盘，曾被显示成「寿命剩余 100%」——官方工具和 CrystalDiskInfo 都是 54%。原因是系统接口拿不到真实值时会返回 0，旧版把它当成了「零磨损」；
+- 现在：拿不到可靠寿命数据时**如实显示「寿命未提供」**，绝不给误导性数字；健康分口径不变（这块盘确实是健康的）；
+- NVMe 改为优先采信健康日志直读的使用率，比系统转手的计数器更可信。
+
+**新增固件版本显示**
+
+- 硬盘详情页显示固件号——识别二手盘、翻新盘靠的就是「型号 + 固件 + 序列号」三要素，现在齐了。
+
+**补充温度口径说明**
+
+- 说明「复合温度」取的是盘内最高传感器，与只显示单颗传感器的工具（如 AIDA64）相差 10~20℃ 属正常，不是读数错误。
+
+**启动更快**
+
+- 测量发现启动体检约 35 秒里，近半花在多余的进程拉起上：修复了「脏位查询每次套一层 PowerShell」（每卷省约 2 秒）和「数据齐全时仍多查一次 WMI」（省约 4 秒）。
+- 收官前又做了一轮实测驱动的深度优化：完整检测 **39.9 秒 → 14.8 秒（快约 63%）**，从双击到出结果约 35-45 秒降到约 19 秒。三项改动全部「功能零变更」——检测结果逐字段比对一致、数据格式与存储逻辑不变、单文件 exe 形态不变：
+  - 枚举与可靠性计数器合并为一条命令（原先两次调用都在跑 `Get-PhysicalDisk`）；
+  - `Get-Partition` 在部分系统稳定返回空，失败结论当天缓存、次日自动重试（原先每次白付约 7.5 秒必然失败）；
+  - WMI 兜底通道下，分区关联与卷空间合并为一次调用（三次冷启动降为一次）。
+
+**新增：提醒记录 · 防打扰**
+
+- 温度偏高、空间紧张、健康异常这类提醒，以前弹完几秒就消失，想回头看看记录却找不到地方。现在主界面多了「健康记录」卡片，点开后切到「提醒记录」标签**随时回看**，每条还附上关键数字（最高温、最紧空间、几块盘要关注）和来源（定时体检 / 开机体检 / 手动体检）；
+- 点异常提醒的气泡，会直接打开主界面并定位到这条记录；
+- 同类异常提醒 **4 小时内不重复弹**（危险级除外——危险永远第一时间告知），高强度使用电脑时不会再被同样的「有点热」反复打扰；
+- 提醒怎么弹、弹多少，仍然可以在托盘右键「提醒设置」里自己定（安静模式只报异常）。
+
+**其它**
+
+- 使用说明弹窗的「下一版计划」改为「功能定型」声明，承诺过的邮件 / 微信提醒已移除（与「完全离线」的定位冲突）。
+
 ## 📝 v1.2.1 更新了什么
 
 这一版都在收拾界面上的琐碎，让软件更好懂、更好用。
@@ -123,17 +168,21 @@
 - 健康分口径写清楚了：为什么我给 92 分、某软件给 78 分——底层读数一样，算法各家自己定，分数不完全一致是正常的；
 - 体检记录现在存 200 条（以前 30 条），并把 30 天前的自动折叠起来。
 
-## 🚀 接下来（v1.3 计划）
+## 🏁 项目状态：功能定型
 
-按现在收到的反馈呼声排的，大致是这个顺序：
+v1.2.2 是挖兔硬盘精灵的**收官版**。核心功能已完整交付：只读 / 离线 / 单文件绿色版，SATA / NVMe 检测、六档评分、盘面扫描、HTML 报告、开机静默体检。
 
-- **邮件 / 微信提醒**：状态变化才推，不刷屏——硬盘突然报异常时你在上班，得让你知道；
-- **USB 移动固态识别**：不少移动固态通过 USB 桥接，SMART 读不到，v1.2 里只能如实标注「不支持」；
-- **Intel VMD / 服务器 RAID 支持**：RAID 卡后面的物理盘在 Windows 层看不见，得走控制器专用解析；
-- **SAS 企业盘支持**；
-- **NVMe 主控与固件信息**、温度口径细化。
+**此后的定位**：不再增加新功能；持续修复问题、跟进 Windows 新版兼容性。出现确认的 bug 会以小版本响应。
 
-进度会开 Issue 跟踪，也欢迎在 Issues 里提需求、报误报。
+**未纳入的功能构想**（已记录在 [GitHub Issues](https://github.com/fan138/WatuDisk/issues)，需求增多时会重新评估）：
+
+- USB 移动固态 / 桥接盘 SMART 识别增强
+- Linux 支持（社区建议过命令行版与 smartctl 报告导入）
+- 健康分 / 温度趋势图
+- 英文界面（i18n）
+- Intel VMD / 服务器 RAID、SAS 企业盘
+
+感谢每一位提建议、报误报的朋友——这个软件的很多改进都来自真实的反馈。
 
 ## 📋 使用说明
 
@@ -146,8 +195,13 @@
 
 ## 🛠️ 环境要求
 
+**运行环境**
 - Windows 10 / 11（x64）
 - 读取完整 SMART 数据需要管理员权限
+- 无需安装 Python —— 下载解压即用
+
+**开发环境**（详见 [`AGENTS.md`](AGENTS.md)）
+- Python 3.8.6 及以上 + PySide6 6.6.3.1（打包另需 PyInstaller 3.6）
 
 ## 📁 目录结构
 
@@ -164,33 +218,50 @@
 │   │   ├── verdict.py       #   评分引擎与六档等级
 │   │   ├── metrics.py       #   指标阈值与四色警示
 │   │   ├── tender.py        #   200+ 条温度提醒文案库
+│   │   ├── care_tips.py     #   护盘小贴士
 │   │   ├── notify_policy.py #   五种提醒方案与习惯降噪
 │   │   ├── autostart.py     #   开机启动（启动文件夹，绿色方式）
 │   │   ├── shutdown_guard.py#   关机/重启守护
+│   │   ├── sysidle.py       #   系统空闲判断（定时体检只在空闲时跑）
+│   │   ├── powershell_runner.py # PowerShell 子进程统一封装
+│   │   ├── resource_path.py #   资源路径解析（打包态 / 源码态双兼容）
+│   │   ├── report.py        #   HTML 报告导出
 │   │   └── store.py         #   有界本地存储（自动迁移）
 │   ├── ui/                  # PySide6 界面（主窗 / 托盘 / 自绘气泡 / 盘面扫描）
 │   ├── assets/              # 图标资源
 │   └── build/               # PyInstaller 打包配置
-└── test/                    # 自动化回归测试
+├── test/                    # 自动化回归测试（30 个测试文件）
+├── deploy/                  # 已发布成品 exe / zip
+└── AGENTS.md                # ★ 开发接手者必读（AI / 新开发者看这份）
 ```
 
 ## 🔧 构建方法
 
-```powershell
-# 1. 安装依赖（Python 3.13 + PySide6）
-pip install PySide6
+> ⚠️ **请先读 [`AGENTS.md`](AGENTS.md) 再动手。** 本项目实测可用的是 **Python 3.8.6**
+> （含 PySide6 6.6.3.1 与 PyInstaller 3.6），装在 `C:\Program Files\python\python.exe`。
+> 代码使用新式类型注解，靠 `from __future__ import annotations` 兼容 3.8。
+> ⚠️ 托管的 Python 3.13 是**空壳**（未装 PySide6 / PyInstaller），**不可用于本项目**。
 
-# 2. 运行源码
+```powershell
+# 1. 运行源码
 python src/main.py
 
-# 3. 运行自检
+# 2. 运行自检（改完必跑）
 python src/main.py --selftest
 
-# 4. 打包单文件 exe
-python -m PyInstaller --clean --noconfirm `
-  --distpath deploy --workpath build/pyinstaller `
-  src/build/diskguard.spec
+# 3. 打包单文件 exe（在 src\ 下执行）
+cd src
+python -m PyInstaller --clean --noconfirm --distpath dist --workpath build/pyinstaller build/diskguard.spec
 ```
+
+-跑 exe 自检用 `timeout 300`（首次冷启动解压可能超 120 秒，会被误判失败）。
+- 跑全量回归前**请先关闭正在运行的 `WatuDiskSprite.exe`**。
+
+## 🧑‍💻 参与开发 / 二次开发
+
+**接手本项目、或用 AI 继续开发前，请先阅读 [`AGENTS.md`](AGENTS.md)。**
+里面写清了项目边界铁律、发布流程、开发环境实测值、模块职责地图、8 条踩坑注意事项与测试纪律 ——
+能帮你避免改错方向、误删项目或误发布。
 
 ## 💬 反馈与共建
 

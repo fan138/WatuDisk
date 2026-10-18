@@ -46,3 +46,6 @@ Thumbs.db
 Desktop.ini
 
 build/tools/
+
+# 性能优化前全量备份（2026-10-18，可回滚基线）
+backup_before_perf_20261018/

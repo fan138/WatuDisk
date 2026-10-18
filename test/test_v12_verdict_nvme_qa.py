@@ -164,11 +164,14 @@ def test_qa_pct_90_deduct_30():
     assert any("已使用寿命" in r for r in v["reasons"]), v["reasons"]
 
 
-def test_qa_pct_92_with_wear_no_double_deduct():
-    """Wear 通道有值（5%）时 NVMe 使用率不得重复扣磨损分。"""
+def test_qa_pct_92_direct_read_preferred_no_double_deduct():
+    """v1.2.2（#20）：NVMe 直读使用率与计数器 Wear 冲突时以直读为准
+    （Windows 计数器可能滞后），且只扣一次分（不双重计磨损）。"""
     v = _eval(nvme=_good_nvme(percentage_used=92), counters={"Temperature": 40, "Wear": 5})
-    assert v["score"] == 100, v
-    assert all("已使用寿命" not in r for r in v["reasons"]), v["reasons"]
+    assert v["score"] == 70, v
+    joined = "".join(v["reasons"])
+    assert "已使用寿命" in joined, v["reasons"]
+    assert joined.count("已使用寿命") + joined.count("寿命已消耗") == 1, "不得双重判读寿命"
 
 
 def test_qa_pct_deduct_applies_on_non_ssd_skipped():

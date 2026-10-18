@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""有界持久化存储（v1.4）：体检记录 / 忽略项 / 设置项。
+"""有界持久化存储（v1.4）：体检记录 / 气泡提醒日志 / 忽略项 / 设置项。
 
 绿色版约定（v1.4 起）：数据统一放 Windows 标准应用数据目录
 %APPDATA%\\DiskGuard\\watu_disk_sprite.json——exe 目录保持永远干净
@@ -66,6 +66,8 @@ class Store:
         self._data: dict = {
             "version": _DATA_VERSION,
             "history": [],
+            # 气泡提醒日志（v1.0 预留、v1.2.2 启用为「提醒记录」面板数据源）
+            "notify_log": [],
             "ignored": [],
             "settings": {},
             # v1.2：每块盘最近一次盘面扫描结果，供导出报告展示
@@ -86,6 +88,9 @@ class Store:
                 data = json.load(handle)
             if isinstance(data, dict):
                 self._data["history"] = list(data.get("history") or [])[-MAX_HISTORY:]
+                # v1.2.2 修复：notify_log 此前只在内存里追加、_load 从不读回，
+                # 重启后提醒记录全丢（v1.0 起预留的接口一直没人接线，属死代码）。
+                self._data["notify_log"] = list(data.get("notify_log") or [])[-MAX_HISTORY:]
                 self._data["ignored"] = list(data.get("ignored") or [])
                 self._data["settings"] = dict(data.get("settings") or {})
                 # v1.2：老数据文件没有 surface_scans 键，补空dict（缺键会读写出错）
@@ -212,7 +217,7 @@ class Store:
             }
 
     # ------------------------------------------------------------------
-    # 气泡提醒日志（v1.5：桌面表格的数据源，封顶 300 条）
+    # 气泡提醒日志（v1.2.2：「提醒记录」面板的数据源，封顶 MAX_HISTORY 条）
     # ------------------------------------------------------------------
     def append_notify_log(self, entry: dict) -> None:
         """记录一条气泡提醒（时间/级别/标题/内容），封顶自动淘汰。"""

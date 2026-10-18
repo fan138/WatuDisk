@@ -19,7 +19,7 @@ _PHYSICALDRIVE_ID_RE = re.compile(r"^(?:\d+|.*PHYSICALDRIVE(\d+))$", re.IGNORECA
 # 用于界面 / 报告显示的类型与接口名映射
 BUS_TEXT = {"NVME": "NVMe", "SATA": "SATA", "USB": "USB", "SAS": "SAS", "RAID": "RAID"}
 
-_DISK_PROPS = "FriendlyName, MediaType, BusType, HealthStatus, OperationalStatus, Size, SerialNumber, DeviceId"
+_DISK_PROPS = "FriendlyName, MediaType, BusType, HealthStatus, OperationalStatus, Size, SerialNumber, DeviceId, FirmwareVersion"
 
 # 需要提取的可靠性计数器字段（v1.1 扩展：温度极值 / 通电次数）
 _COUNTER_PROPS = (
@@ -109,7 +109,7 @@ def _fallback_disk_meta() -> dict[str, dict]:
     """
     command = (
         "Get-CimInstance Win32_DiskDrive | Select-Object Index, Model, SerialNumber, "
-        "Size, MediaType, InterfaceType | ConvertTo-Json -Depth 2"
+        "Size, MediaType, InterfaceType, FirmwareRevision | ConvertTo-Json -Depth 2"
     )
     data = run_ps_json(command, timeout=30)
     result: dict[str, dict] = {}
@@ -123,6 +123,7 @@ def _fallback_disk_meta() -> dict[str, dict]:
         result[index] = {
             "model": str(item.get("Model") or "").strip(),
             "serial": str(item.get("SerialNumber") or "").strip(),
+            "firmware": str(item.get("FirmwareRevision") or item.get("FirmwareVersion") or "").strip(),
             "size": _to_int(item.get("Size")) or 0,
             "media_hint": "HDD" if "externalharddiskmedia" not in media.lower() and "harddiskmedia" in media.lower() else "",
         }
@@ -147,7 +148,7 @@ def _enumerate_via_wmi() -> list[dict]:
     """
     command = (
         "Get-CimInstance Win32_DiskDrive | Select-Object Index, Model, SerialNumber, "
-        "Size, MediaType, Status, InterfaceType, PNPDeviceID | "
+        "Size, MediaType, Status, InterfaceType, PNPDeviceID, FirmwareRevision | "
         "ConvertTo-Json -Depth 2"
     )
     data = run_ps_json(command, timeout=30)
@@ -212,9 +213,61 @@ def _enumerate_via_wmi() -> list[dict]:
                 "op_status": "OK" if health_status == "Healthy" else health_status,
                 "size": _to_int(item.get("Size")) or 0,
                 "serial": str(item.get("SerialNumber") or "").strip(),
+                # v1.2.2（#14）：固件版本（WMI 属性名 FirmwareRevision）
+                "firmware": str(item.get("FirmwareRevision") or item.get("FirmwareVersion") or "").strip(),
             }
         )
     return disks
+
+
+def _parse_primary_disk_item(item: dict, fallback: dict[str, dict]) -> dict | None:
+    """解析 Get-PhysicalDisk 主通道的单项（v1.2.2 性能：枚举/计数器合并后共用）。
+
+    get_physical_disks 与 get_disks_with_counters 的输出结构必须逐字段一致，
+    因此解析逻辑只保留这一份；缺项时用 Win32_DiskDrive 兜底数据补齐。
+    """
+    device_id = str(item.get("DeviceId") if item.get("DeviceId") is not None else "")
+    model = str(item.get("FriendlyName") or "").strip()
+    serial = str(item.get("SerialNumber") or "").strip()
+    size = _to_int(item.get("Size")) or 0
+    media_type = str(item.get("MediaType") or "Unspecified")
+    # v1.2.2（#14）：固件版本优先取主通道，缺失时用 WMI 兜底补齐
+    firmware = str(item.get("FirmwareVersion") or "").strip()
+    meta = fallback.get(device_id) or {}
+    if (not model or model == "未知型号") and meta.get("model"):
+        model = meta["model"]
+    if not serial and meta.get("serial"):
+        serial = meta["serial"]
+    if not firmware and meta.get("firmware"):
+        firmware = meta["firmware"]
+    if not size and meta.get("size"):
+        size = meta["size"]
+    if media_type.lower() in ("", "unspecified", "none") and meta.get("media_hint"):
+        media_type = meta["media_hint"]
+    return {
+        "device_id": device_id,
+        "model": model or "未知型号",
+        "media_type": media_type,
+        "bus_type": str(item.get("BusType") or "Unknown"),
+        "health_status": str(item.get("HealthStatus") or "Unknown"),
+        "op_status": str(item.get("OperationalStatus") or "Unknown"),
+        "size": size,
+        "serial": serial,
+        "firmware": firmware,
+    }
+
+
+def _need_wmi_fallback(items: list) -> bool:
+    """主通道是否有盘缺型号/序列号/固件/容量/介质类型（决定是否查 WMI 兜底）。"""
+    return any(
+        (not str(it.get("FriendlyName") or "").strip())
+        or (not str(it.get("SerialNumber") or "").strip())
+        or (not str(it.get("FirmwareVersion") or "").strip())
+        or (_to_int(it.get("Size")) or 0) == 0
+        or str(it.get("MediaType") or "").lower() in ("", "unspecified", "none")
+        for it in items
+        if isinstance(it, dict)
+    )
 
 
 def get_physical_disks() -> list[dict]:
@@ -226,42 +279,22 @@ def get_physical_disks() -> list[dict]:
         v1.5：FriendlyName/SerialNumber 缺失时用 Win32_DiskDrive 兜底补齐。
         v1.2（#12）：主通道返回空时改用 Win32_DiskDrive **主枚举兜底**，
             解决 IoT LTSC / PE 等 Storage 接口不可用环境「找不到硬盘」的问题。
+        v1.2.2（#10）：WMI 兜底改为**按需调用**——主通道数据齐全时不再
+            无条件查询，每次启动省一次 PowerShell 冷启动（约 4 秒）。
     """
     command = f"Get-PhysicalDisk | Select-Object {_DISK_PROPS} | ConvertTo-Json -Depth 3"
     data = run_ps_json(command, timeout=30)
     disks: list[dict] = []
     if data is not None:
         items = data if isinstance(data, list) else [data]
-        fallback = _fallback_disk_meta()
+        # v1.2.2（#10 启动提速）：WMI 兜底按需调用——此前无条件调用，
+        # 主通道数据齐全时也白付一次 PowerShell 冷启动（实测约 4 秒）。
+        # 仅当某块盘缺型号/序列号/容量/固件、或介质类型需补齐时才查。
+        fallback = _fallback_disk_meta() if _need_wmi_fallback(items) else {}
         for item in items:
             if not isinstance(item, dict):
                 continue
-            device_id = str(item.get("DeviceId") if item.get("DeviceId") is not None else "")
-            model = str(item.get("FriendlyName") or "").strip()
-            serial = str(item.get("SerialNumber") or "").strip()
-            size = _to_int(item.get("Size")) or 0
-            media_type = str(item.get("MediaType") or "Unspecified")
-            meta = fallback.get(device_id) or {}
-            if (not model or model == "未知型号") and meta.get("model"):
-                model = meta["model"]
-            if not serial and meta.get("serial"):
-                serial = meta["serial"]
-            if not size and meta.get("size"):
-                size = meta["size"]
-            if media_type.lower() in ("", "unspecified", "none") and meta.get("media_hint"):
-                media_type = meta["media_hint"]
-            disks.append(
-                {
-                    "device_id": device_id,
-                    "model": model or "未知型号",
-                    "media_type": media_type,
-                    "bus_type": str(item.get("BusType") or "Unknown"),
-                    "health_status": str(item.get("HealthStatus") or "Unknown"),
-                    "op_status": str(item.get("OperationalStatus") or "Unknown"),
-                    "size": size,
-                    "serial": serial,
-                }
-            )
+            disks.append(_parse_primary_disk_item(item, fallback))
     # v1.2（#12）：主通道无有效结果（命令失败 / 返回空 / 全部缺 device_id）时，
     # 改走 CIM 通道列盘，而不是让用户看到「0 块盘」。
     if not any(d.get("device_id") for d in disks):
@@ -342,3 +375,56 @@ def get_reliability_counters() -> dict[str, dict]:
         # v1.2（#12）：计数器主通道为空时走 CIM 兜底
         result = _counters_via_cim()
     return result
+
+
+def get_disks_with_counters() -> tuple[list[dict], dict[str, dict]]:
+    """一条命令同时取回枚举 + 可靠性计数器（v1.2.2 性能优化 A）。
+
+    背景（实测）：get_physical_disks 与 get_reliability_counters 都要执行
+    Get-PhysicalDisk（后者经管道逐盘追加 Get-StorageReliabilityCounter），
+    一次完整检测等于把枚举跑了两遍，本机实测各约 5-6 秒。合并为一条命令
+    后只跑一遍，本机实测省约 5 秒；输出结构与分别调用两个原函数完全一致
+    （解析逻辑共用 _parse_primary_disk_item，计数器逐字段同名同值）。
+
+    兜底链路与原两个函数各自保持一致：
+    - 某块盘缺型号/序列号/固件/容量/介质 -> Win32_DiskDrive 按需补齐；
+    - 主通道无有效 device_id -> CIM 主枚举兜底（此时计数器随之为空）；
+    - 计数器整体为空 -> MSFT_PhysicalDisk CIM 通道兜底。
+
+    Returns:
+        (disks, counters_map)——与 get_physical_disks() /
+        get_reliability_counters() 的输出逐字段同构。
+    """
+    disk_expr = "; ".join(f"{name} = $_.{name}" for name in _DISK_PROPS.split(", "))
+    counter_expr = "; ".join(f"{name} = $c.{name}" for name in _COUNTER_PROPS)
+    command = (
+        "Get-PhysicalDisk | ForEach-Object { "
+        "$c = $_ | Get-StorageReliabilityCounter; "
+        f"[PSCustomObject]@{{ {disk_expr}; {counter_expr} }} "
+        "} | ConvertTo-Json -Depth 3"
+    )
+    data = run_ps_json(command, timeout=45)
+    disks: list[dict] = []
+    counters: dict[str, dict] = {}
+    if data is not None:
+        items = data if isinstance(data, list) else [data]
+        fallback = _fallback_disk_meta() if _need_wmi_fallback(items) else {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            disk = _parse_primary_disk_item(item, fallback)
+            disks.append(disk)
+            device_id = disk["device_id"]
+            if device_id != "":
+                counters[device_id] = {
+                    name: _to_int(item.get(name)) for name in _COUNTER_PROPS
+                }
+    # v1.2（#12）：主通道无有效结果时走 CIM 枚举兜底（与 get_physical_disks 一致）
+    if not any(d.get("device_id") for d in disks):
+        wmi_disks = _enumerate_via_wmi()
+        if wmi_disks:
+            return wmi_disks, {}
+    # v1.2（#12）：计数器为空时走 CIM 兜底（与 get_reliability_counters 一致）
+    if not counters:
+        counters = _counters_via_cim()
+    return disks, counters

@@ -12,6 +12,11 @@
 - 连续 4 条「健康完成」气泡用户都没打开过主界面 -> 视为不打扰偏好，
   当天剩余的健康提示自动静默（异常永远照报，且跨天自动重置）；
 - 用户打开主界面即视为互动，静默计数清零。
+
+异常提醒冷却（v1.2.2，用户反馈「有点热」反复弹）：
+- 同类异常提醒（高温 / 警告 / 空间偏低）4 小时内不重复弹，按分类各自计时；
+- 危险级豁免冷却——危险永远忠言逆耳；
+- 总开关（notify_enabled）关时一切静默，危险也不例外。
 """
 from __future__ import annotations
 
@@ -110,6 +115,45 @@ def on_worse_notify(profile: str) -> bool:
     """异常提醒是否允许（只受总开关控制；危险永远忠言逆耳）。"""
     store = get_store()
     return bool(store.get_setting("notify_enabled", True))
+
+
+# 同类异常提醒的最小间隔（秒）。高强度使用电脑时后台检测每 2 小时跑一次，
+# 没有冷却的话「硬盘有点发热了」会反复弹——同样的信息再说一遍只是打扰。
+# 危险级豁免：危险永远忠言逆耳，绝不因冷却而沉默。
+WORSE_COOLDOWN_SECONDS = 4 * 3600
+DANGER_CATEGORY = "danger"
+
+
+def _worse_last_key(category: str) -> str:
+    return f"notify_worse_last_{category or 'unknown'}"
+
+
+def should_notify_worse(profile: str, category: str) -> bool:
+    """异常类提醒是否放行：总开关优先；危险级不受冷却限制；其余同类 4 小时冷却。
+
+    Args:
+        profile: 当前提醒方案（quiet/gentle/daily/warm/extra）。
+        category: 本次分类（ok / warn / danger / space_low / space_critical / hot）。
+    """
+    store = get_store()
+    if not on_worse_notify(profile):
+        return False
+    if category == DANGER_CATEGORY:
+        return True
+    last = str(store.get_setting(_worse_last_key(category)) or "")
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except ValueError:
+        return True  # 脏数据不该把提醒永久锁死
+    return (datetime.now() - last_dt).total_seconds() >= WORSE_COOLDOWN_SECONDS
+
+
+def mark_worse_notified(category: str) -> None:
+    """记录某类异常提醒已弹出（冷却计时起点，按分类各自计时）。"""
+    store = get_store()
+    store.set_setting(_worse_last_key(category), datetime.now().isoformat(timespec="seconds"))
 
 
 def extra_line(profile: str, last_tip_index: int | None = None) -> tuple[str, int]:

@@ -85,3 +85,30 @@ def run_ps_json(command: str, timeout: int = DEFAULT_TIMEOUT) -> object | None:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def run_exe_text(argv: list[str], timeout: int = DEFAULT_TIMEOUT, check_code: bool = False) -> str | None:
+    """直接执行系统 exe（不套 PowerShell 进程），返回文本输出。
+
+    v1.2.2（#10 启动提速）：fsutil 等稳定系统工具原先走 run_ps_text，每次调用
+    都要白付一次 PowerShell 冷启动（实测约 2 秒/次）。直调后降到几十毫秒，
+    脏位查询从「每卷约 2.2 秒」降到几乎无感。
+
+    Args:
+        argv: 可执行文件 + 参数列表（如 ["fsutil", "dirty", "query", "C:"]）。
+        timeout: 超时秒数。
+        check_code: 是否将非零退出码视为失败（fsutil 退出码语义不标准，传 False）。
+
+    Returns:
+        输出文本；任何失败返回 None。
+    """
+    kwargs: dict = {"capture_output": True, "timeout": timeout}
+    if os.name == "nt":
+        kwargs["creationflags"] = CREATE_NO_WINDOW
+    try:
+        proc = subprocess.run(argv, **kwargs)  # noqa: S603 - 固定的可信系统程序
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if check_code and proc.returncode != 0:
+        return None
+    return _decode_output(proc.stdout)

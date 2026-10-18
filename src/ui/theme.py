@@ -132,6 +132,14 @@ QLabel#historyDetail { font-size: 12px; color: #6B7280; padding: 1px 4px 3px 10p
 QScrollArea#historyScroll { background: transparent; border: none; }
 QScrollArea#historyScroll > QWidget > QWidget { background: transparent; }
 
+/* ---- 健康记录：标签页（v1.2.2：体检/提醒合并为一个卡片，标签切换） ---- */
+QPushButton#healthTab { background: transparent; color: #6B7280; border: none;
+                        border-bottom: 2px solid transparent; padding: 3px 10px;
+                        font-size: 12px; }
+QPushButton#healthTab:hover { color: #2563EB; }
+QPushButton#healthTab:checked { color: #2563EB; border-bottom: 2px solid #2563EB;
+                                font-weight: 600; }
+
 /* ---- v1.2 预热角标（v1.1.1：右上角淡灰小问号） ---- */
 QPushButton#v12Hint { background: transparent; color: #C9CDD3; border: none;
                       border-radius: 11px; font-size: 13px; font-weight: 700; }

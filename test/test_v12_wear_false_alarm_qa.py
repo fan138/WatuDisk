@@ -93,7 +93,7 @@ def test_metrics_life_remaining_shows_not_provided():
     }
     row = _metric_row(result, "life_remaining")
     assert row is not None, "该行不应被隐藏"
-    assert row["text"] == "未提供（早期硬盘）", f"文案不对: {row['text']}"
+    assert row["text"] == "未提供", f"文案不对: {row['text']}"
     assert row["level"] == metrics_mod.LEVEL_OK, f"不应是危险色，等级={row['level']}"
     assert "0%" not in str(row["text"]), f"不应再出现 0%: {row['text']}"
 
@@ -114,7 +114,7 @@ def test_report_life_remaining_shows_not_provided():
         "dirty_volumes": [],
     }
     html = report_mod.build_report_html([result])
-    assert "未提供（早期硬盘）" in html, "报告应显示未提供寿命"
+    assert "未提供" in html, "报告应显示未提供寿命"
     assert "剩余寿命 0%" not in html, f"报告不应再出现「剩余寿命 0%」"
 
 
