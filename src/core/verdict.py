@@ -141,18 +141,44 @@ _WEAR_ZERO_MIN_POWER_HOURS = 10000  # Wear=0 判「无数据」所需的最小�
 _NVME_PCT_UNREPORTED = 255          # NVMe 规范：Percentage Used = 255 表示「未上报」
 
 
-def resolve_wear_used(disk: dict, counters: dict | None, nvme_health: dict | None) -> int | None:
+def _sata_smart_life(smart_values: dict | None) -> int | None:
+    """从 SATA SMART 属性取「剩余寿命」归一化值（%）。
+
+    v1.2.3（#20 续）：西数 / SanDisk 等 SATA 固态把真实剩余寿命写在 SMART 属性里
+    ——通常是 0xE7（「SSD 剩余寿命」），少数用 0xE9 / 0xE8。Windows 自带的
+    StorageReliabilityCounter.Wear 对这类盘常常是空 / 0，故作为兜底来源。
+    仅采纳 1–100 的合理区间，避免把无关属性的数值误当寿命。
+    """
+    if not smart_values:
+        return None
+    for attr_id in (0xE7, 0xE9, 0xE8):
+        value = smart_values.get(attr_id)
+        if isinstance(value, int) and 1 <= value <= 100:
+            return value
+    return None
+
+
+def _wear_zero_suspicious(counters: dict | None) -> bool:
+    """Wear=0 但通电足够久（≥_WEAR_ZERO_MIN_POWER_HOURS）时，视为 Windows 默认值
+    而非真实「全新」——这类盘根本没提供磨损数据（金士顿 SA400 实证）。"""
+    hours = _to_int((counters or {}).get("PowerOnHours"))
+    return hours is not None and hours >= _WEAR_ZERO_MIN_POWER_HOURS
+
+
+def resolve_wear_used(
+    disk: dict,
+    counters: dict | None,
+    nvme_health: dict | None,
+    smart_values: dict[int, int] | None = None,
+) -> int | None:
     """解析 SSD 已消耗寿命百分比（Wear）；无可靠数据时返回 None。
 
-    v1.2.2（#20 金士顿 SA400「寿命剩余假 100%」）三条规则：
-    1. NVMe 优先采信健康日志**直读**的 percentage_used——它比 Windows 转手的计数器
-       可信（这正是 core.nvme_health 模块存在的意义）；255 是 NVMe 规范规定的
-       「未上报」值，同样判无数据；
-    2. Wear=0 且通电时间 ≥10,000 小时判为无数据——这块盘不可能还是新的
-       （坛友 dddd592 实证：SA400 通电 43,393 小时，金士顿官方工具与
-       CrystalDiskInfo 均显示剩余 54%，Windows 却给 Wear=0，旧版显示成 100%）；
-    3. Wear=95 这类非默认值仍按真实测量采信；其余情况原样返回。
-
+    v1.2.2（#20）：NVMe 优先采信健康日志直读 percentage_used（255=未上报）；
+        SATA 的 Windows Wear=0 且通电≥1 万小时判为无数据（金士顿 SA400 实证），
+        默认值两侧都不可信，避免「通电 4.3 万小时却显示剩余 100%」。
+    v1.2.3（#20 续）：SATA 固态在 Windows 侧拿不到可靠磨损时，回退读 SMART 剩余
+        寿命属性（0xE7 / 0xE9 / 0xE8），wear_used = 100 - 剩余%，让西数等盘也能
+        显示真实剩余百分比，而非停在默认满分 100（属漏读、非设计如此）。
     verdict 评分 / metrics 指标表 / 界面摘要三处共用本函数，保证口径一致。
     """
     media = str(disk.get("media_type") or "").upper()
@@ -163,12 +189,12 @@ def resolve_wear_used(disk: dict, counters: dict | None, nvme_health: dict | Non
     if bus == "NVME" and nvme_pct is not None:
         return None if nvme_pct >= _NVME_PCT_UNREPORTED else nvme_pct
     wear = _to_int((counters or {}).get("Wear"))
-    if wear is None:
+    # Windows 侧无可靠磨损（缺失，或 0 且高通电=默认值）→ SATA 再试 SMART 兜底
+    if wear is None or (wear == 0 and _wear_zero_suspicious(counters)):
+        life = _sata_smart_life(smart_values)
+        if life is not None:
+            return 100 - life
         return None
-    if wear == 0:
-        hours = _to_int((counters or {}).get("PowerOnHours"))
-        if hours is not None and hours >= _WEAR_ZERO_MIN_POWER_HOURS:
-            return None
     return wear
 
 
@@ -217,6 +243,8 @@ def evaluate_disk(
             smart[int(attr["id"])] = attr
         except (KeyError, TypeError, ValueError):
             continue
+    # v1.2.3（#20 续）：归一化值表，供 SATA 固态剩余寿命 SMART 兜底解析
+    smart_values = {aid: int(a.get("value") or 0) for aid, a in smart.items()}
 
     had_counters = counters is not None
     had_smart = bool(smart_attrs)
@@ -287,7 +315,7 @@ def evaluate_disk(
     media = str(disk.get("media_type") or "").upper()
     bus = str(disk.get("bus_type") or "").upper()
     is_ssd = media == "SSD" or bus == "NVME"
-    wear_used = resolve_wear_used(disk, counters, nvme_health)
+    wear_used = resolve_wear_used(disk, counters, nvme_health, smart_values)
     # v1.2（#18）：交叉校验「寿命耗尽」是否可信。
     # 部分早期 SATA SSD（如 2013 年的金士顿 SV300S37A240G）硬件不提供寿命/磨损
     # 数据，Windows 的 Get-StorageReliabilityCounter 会填回默认 Wear=100。

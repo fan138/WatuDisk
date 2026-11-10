@@ -37,6 +37,7 @@ QA_V12_MODULES = [
     "test_v122_life_no_data_qa",  # v1.2.2 #20 寿命「假数据」双向校验（SA400 假 100%）
     "test_v122_reminder_log_qa",  # v1.2.2 提醒记录可回看 + 同类异常 4 小时冷却
     "test_v122_perf_pipeline_qa",  # v1.2.2 性能：采集合并 + standard 失败当日缓存（功能零变更）
+    "test_v122_sata_life_qa",  # v1.2.3 #20 续：SATA 固态 SMART 0xE7 剩余寿命漏读修复
 ]
 
 LEGACY_MODULES = [

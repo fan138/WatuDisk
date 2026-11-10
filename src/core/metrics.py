@@ -159,6 +159,10 @@ def metric_items_for_result(result: dict) -> list[dict]:
             smart_raw[int(attr.get("id") or 0)] = int(attr.get("raw") or 0)
         except (TypeError, ValueError):
             continue
+    # v1.2.3（#20 续）：归一化值表，供 SATA 固态剩余寿命 SMART 兜底解析
+    smart_values: dict[int, int] = {
+        int(attr.get("id") or 0): int(attr.get("value") or 0) for attr in attrs
+    }
 
     def _lba_size_text(raw: object) -> str | None:
         """0xF1/0xF2 原始值（LBA 数 ×512 字节）转容量文本；过小视为单位异常，宁缺毋滥。"""
@@ -223,7 +227,7 @@ def metric_items_for_result(result: dict) -> list[dict]:
     # v1.2.2（#20）：寿命解析统一走 verdict.resolve_wear_used——NVMe 优先直读
     # percentage_used、Wear=0 且高通电判无数据，与判读层/界面摘要同源，
     # 不再出现「通电 4.3 万小时却显示剩余 100%」这类误导（SA400 实证）。
-    wear_used = resolve_wear_used(disk, counters, nvme)
+    wear_used = resolve_wear_used(disk, counters, nvme, smart_values)
     wear_signal = counters.get("Wear") if counters else None
     wear_from_counters = isinstance(wear_signal, int) and 0 <= wear_signal <= 100
     nvme_pct = nvme.get("percentage_used")

@@ -111,6 +111,7 @@ sha256sum 目标文件 备份文件     # 两者哈希必须一致，才算备�
 | --- | --- | --- | --- |
 | v1.2.1 | 已发布（GitHub + Gitee） | `cd6b36e1d4d2103d01f60a7cf0e76b376ab0fd59` | `d8aab8fca070dc7e3b23c6bc154c592e5cf6bf73b673c73a0fc016e859ecd785` |
 | v1.2.2 | 收官版，**已发布**（GitHub Release v1.2.2 + Gitee 待同步） | Release tag `3c94cd64ca2c`（发布锚点；main 后续仅有文档类修正提交，发布内容以此 tag 为准）。本地平行提交（API 发布造成的同内容不同 SHA，属预期现象，勿惊慌） | `3eaaf5953b4cad6893c0b865c02843792e7c1dce9c99fd639232120f3e1e10fc`（`deploy/WatuDiskSprite_v1.2.2.exe`，28,103,697 B；含「健康记录」标签合并 + 性能优化；历史构建归档于 `.workbuddy/backup_20261018_healthtab/`，优化前全量备份在 `backup_before_perf_20261018/`） |
+| v1.2.3 | 维护性更新（#20 续 SATA 寿命漏读 + 版本号升 v1.2.3），**已构建待验收**（未 commit / 未发布） | 本地构建（验收通过后提交） | `e67df6fe79319c23c603761235cfeb35d2fb2da7d7b90495bad0be14f9bf6cdb`（`deploy/WatuDiskSprite_v1.2.3.exe`，28,105,854 B；内嵌 python313.dll，与 v1.2.2 同构建基线；SATA 固态 SMART 0xE7 剩余寿命兜底解析；构建前全量备份在 `.workbuddy/backup_v123/`） |
 
 ### 4.2 v1.2.2 改了什么（2026-10-18 实现）
 
@@ -123,7 +124,17 @@ sha256sum 目标文件 备份文件     # 两者哈希必须一致，才算备�
 - **健康记录合并（2026-10-18 深夜，用户拍板「以后的每个版本都并入 1.2.2」后追加）**：`HistoryPanel` / `ReminderPanel` 各占一张卡片 → 合并为 `HealthRecordPanel`（QStackedWidget + 两个 slim 子面板，`embedded=True` 时无自有头部、`_expanded` 恒 True、折叠开关失效）。默认标签=体检记录，`health_tab` / `health_expanded` 两个设置项持久化；`DiskCard._collapse_history_below` 收起链优先命中 `_health_panel`（旧 `_history_panel`/`_reminder_panel` 分支保留兜底，源码守卫仍守它们）；新增 `#healthTab` QSS（`:checked` 驱动激活态，无需 repolish）。**教训**：源码守卫比索引位置时，docstring 里的字样会干扰——要比就比完整代码模式（`getattr(node, "_health_panel"`）。
 - 测试：新增 `test_v122_life_no_data_qa`（19 例）；`test_v12_wear_false_alarm_qa` 标签随「未提供（早期硬盘）」→「未提供」更新；`test_v12_score_explain_qa` 的「下一版计划」守卫改写为「功能定型」守卫。
 - **性能优化（2026-10-18 深夜-19 日凌晨，用户批准「实测驱动、功能锁定」模式）**：cProfile 实测完整检测 39.9s 中 99.9% 在等 9 次 PowerShell 子进程 → ① `disk_info.get_disks_with_counters()` 一条命令同时取枚举+计数器（`_detect` 改走它；两个原公开函数保留，测试/QA 直接调用不受影响）；② `volume_check` 对 `Get-Partition` 稳定返回空的系统（实测本机管理员下也空）当日缓存失败结论（设置键 `partmap_std_failed_date`，次日自动重置重试），省每次约 7.5s 必然失败；③ WMI 通道下分区关联+卷空间合并为一次调用（`_MERGE_SEP` 分隔符三段 JSON，入口 `_collect_volume_maps`）。结果：检测 39.9→14.8s（-63%）、exe 端到端 35-45→约 19s、子进程 9→5 次、内存峰值不变（61.5→61.3MB）、真机对比合并 API 与旧 API 输出逐字段一致（仅温度允许 ±2°C 自然波动）。新增 `test_v122_perf_pipeline_qa`（13 例）；**修了 `test_v11_detect_e2e_offscreen` 的 mock 覆盖缺口**（合并查询走 `run_ps_text`，旧测试只 patch `run_ps_json`，导致真实 WMI 成功返回、「全失败」场景失效）。优化前全量备份在 `backup_before_perf_20261018/`（gitignored）。
-- 构建环境更正（2026-10-18 踩坑）：打包必须用托管 venv 3.13（PyInstaller 6.22.2），详见 5.1 / 5.5。全量回归在系统 3.8.6 与 venv 3.13.14 下均 **481/481 全绿**，exe 自带 `--selftest` / `--smoke` exit=0。
+- 构建环境更正（2026-10-18 踩坑）：打包必须用托管 venv 3.13（PyInstaller 6.22.2），详见 5.1 / 5.5。全量回归在系统 3.8.6 与 venv 3.13.14 下均 **498/498 全绿**（v1.2.3 新增 17 例），exe 自带 `--selftest` / `--smoke` exit=0。
+
+### 4.3 v1.2.3 改了什么（2026-11-11 实现）
+
+- **#20 续：SATA 固态剩余寿命漏读修复**（确认的 bug，功能定型范围内的维护性更新）：v1.2.2 只修了「磨损数据缺失→误显 100%」（金士顿 SA400），但西数 / SanDisk 这类 SATA 固态的真实剩余寿命写在 SMART 属性（0xE7「SSD 剩余寿命」，少数用 0xE9 / 0xE8），而 Windows 自带的 StorageReliabilityCounter.Wear 对它们常为空白，于是软件读不到寿命、健康分停在默认满分 100，与 WD Dashboard / CrystalDiskInfo 显示的约 60% 对不上。
+  - `verdict.resolve_wear_used()` 增加 `smart_values` 参数：Windows 侧无可靠磨损（缺失，或 Wear=0 且通电≥1 万小时）时，回退读 SMART 0xE7（兜底 0xE9 / 0xE8）的归一化值，wear_used = 100 - 剩余%；
+  - 三处调用方（判读层 `evaluate_disk`、指标表 `metrics.metric_items_for_result`、界面摘要 `_summary_header`）均传入 SATA SMART 归一化值，口径一致；
+  - 不破坏 NVMe 直读、Windows 真实 Wear、HDD 等既有路径；越界值（如 0xE7=255）忽略；
+  - 新增 `test_v122_sata_life_qa`（17 例：单元 + 指标表/判读集成 + 三处调用源码守卫）；`run_v12_regression.py` 已注册，全量 498/498。
+- 文档同步：CHANGELOG 加 [1.2.3] 节；README 版本声明改 v1.2.3 并补 v1.2.3 小节；本文件指纹表 + 回归数更新。
+- 未改动：任何功能行为、交付形态（单文件 exe）、UI 布局。
 
 ### 4.3 改动前自检
 ```bash

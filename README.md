@@ -8,7 +8,7 @@
 > ### ⚡ 给 AI 与接手开发者
 > **在本仓库做任何事之前，先读 [`AGENTS.md`](AGENTS.md)。** 里面有项目边界、发布铁律、
 > 开发环境实测值、模块地图与踩坑清单。与本文件冲突时**以 `AGENTS.md` 为准**。
-> 当前对外发布版本为 **v1.2.2**（收官版：功能定型，不再增加新功能）。
+> 当前对外发布版本为 **v1.2.3**（功能定型后的维护性更新：确认的 bug 修复，不增加新功能）。
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](https://www.microsoft.com/windows)
@@ -89,6 +89,16 @@
 
 - 读取完整 SMART 数据需要管理员权限（程序会自动请求 UAC 提权）；
 - 若未以管理员身份运行，部分检测项会受限，界面会明确提示。
+
+## 📝 v1.2.3 更新了什么
+
+小版本（功能定型范围内的维护性更新）。
+
+**修掉西数等 SATA 固态剩余寿命漏读（issue #20 续）**
+
+- v1.2.2 只修了「磨损数据缺失→误显 100%」（金士顿 SA400）；但西数 / SanDisk 这类 SATA 固态的真实剩余寿命写在 SMART 属性（0xE7「SSD 剩余寿命」），而 Windows 自带的计数器对它们常为空白，于是软件读不到寿命、健康分停在默认满分 100，与 WD Dashboard / CrystalDiskInfo 显示的约 60% 对不上；
+- v1.2.3 在 Windows 侧拿不到可靠磨损时，回退读取 SMART 0xE7（兜底 0xE9 / 0xE8）的剩余寿命，让这类盘显示真实百分比；
+- 判读层 / 指标表 / 界面摘要三处共用同一解析入口，口径一致；NVMe 直读、Windows 真实 Wear、HDD 等路径不受影响。
 
 ## 📝 v1.2.2 更新了什么（收官版）
 

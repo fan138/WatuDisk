@@ -1229,8 +1229,13 @@ class DiskCard(QFrame):
 
         # v1.2.2（#20）：寿命解析与判读层同源（verdict.resolve_wear_used）——
         # NVMe 优先直读使用率；Wear=0 且通电≥1万小时 / NVMe 未上报时显示
-        # 「寿命未提供」，不再出现 SA400 那种「通电 4.3 万小时却显示 100%」的误导。
-        wear = resolve_wear_used(disk, counters, result.get("nvme_health"))
+        # 「寿命未提供」。v1.2.3（#20 续）：SATA 固态 Windows 侧无数据时再回退
+        # SMART 0xE7 剩余寿命，西数等盘能显示真实剩余百分比，不再停在默认满分 100。
+        _sv = {
+            int(a.get("id") or 0): int(a.get("value") or 0)
+            for a in (result.get("smart_attrs") or [])
+        }
+        wear = resolve_wear_used(disk, counters, result.get("nvme_health"), _sv)
         if media == "SSD" or str(disk.get("bus_type") or "").upper() == "NVME":
             parts.append(f"寿命剩余 {max(0, 100 - wear)}%" if wear is not None else "寿命未提供")
 
